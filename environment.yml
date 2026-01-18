@@ -1,0 +1,12 @@
+name: langchain_env
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - langchain
+    - langchain-community
+    - langchain-chroma
+    - pypdf
+    - sentence-transformers
