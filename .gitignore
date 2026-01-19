@@ -192,3 +192,6 @@ pyrightconfig.json
 
 chroma_db/
 cv_ver2.pdf
+output/
+jobs/
+reports/
