@@ -18,8 +18,8 @@ class Config:
     CHUNK_OVERLAP = 50
     # Paths for specific scripts
     JOBS_FILE = "./jobs/processed_jobs_schema.json"
-    RESUME_FILE = "cv_ver2.pdf"
-
+    RESUME_FILE = "./cv/cv_ver2.pdf"
+    OUTPUT_DIR = "./output"
 # ==========================================
 # 2. Shared Types
 # ==========================================
