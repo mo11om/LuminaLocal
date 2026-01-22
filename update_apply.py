@@ -41,7 +41,7 @@ class ResumeGraphBuilder:
     def __init__(self, vector_store):
         self.vector_store = vector_store
         self.llm = OllamaLLM(model=Config.LLM_MODEL)
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 8})
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
 
     def retrieve_node(self, state: BaseAgentState):
         question = state["job_description"]
@@ -198,7 +198,7 @@ if __name__ == "__main__":
         # ==========================================
         # CSV EXPORT LOGIC
         # ==========================================
-        csv_filename = "analysis_results.csv"
+        csv_filename = Config.ANALYSIS_OUTPUT_CSV
         output_dir = getattr(Config, 'OUTPUT_DIR', '.')
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)

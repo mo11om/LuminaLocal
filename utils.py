@@ -31,6 +31,10 @@ class Config:
     JOBS_FILE = _data.get("JOBS_FILE", "./jobs/processed_jobs_schema_all.json")
     RESUME_FILE = _data.get("RESUME_FILE", "./cv/CV.md.pdf")
     OUTPUT_DIR = _data.get("OUTPUT_DIR", "./output")
+    
+    # Hyperparameters
+    RETRIEVER_K = _data.get("RETRIEVER_K", 8)
+    ANALYSIS_OUTPUT_CSV = _data.get("ANALYSIS_OUTPUT_CSV", "analysis_results.csv")
 # ==========================================
 # 2. Shared Types
 # ==========================================
