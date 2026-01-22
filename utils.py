@@ -12,7 +12,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # 1. Configuration (Shared)
 # ==========================================
 class Config:
-    _config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../config.json")
+    _config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "./config.json")
     
     if os.path.exists(_config_path):
         with open(_config_path, "r") as f:
