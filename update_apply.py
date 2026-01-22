@@ -41,7 +41,7 @@ class ResumeGraphBuilder:
     def __init__(self, vector_store):
         self.vector_store = vector_store
         self.llm = OllamaLLM(model=Config.LLM_MODEL)
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 20})
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 8})
 
     def retrieve_node(self, state: BaseAgentState):
         question = state["job_description"]

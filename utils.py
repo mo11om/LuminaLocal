@@ -1,4 +1,5 @@
 import os
+import json
 from typing import TypedDict, Optional, Dict, Any
 
 # LangChain / Community Imports
@@ -11,15 +12,25 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # 1. Configuration (Shared)
 # ==========================================
 class Config:
-    LLM_MODEL = "gpt-oss:20b" 
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    VECTOR_DB_PATH = "./chroma_db"
-    CHUNK_SIZE = 500
-    CHUNK_OVERLAP = 50
+    _config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../config.json")
+    
+    if os.path.exists(_config_path):
+        with open(_config_path, "r") as f:
+            _data = json.load(f)
+    else:
+        # Fallback default values or raise error
+        print(f"⚠️ Config file not found at {_config_path}, using defaults")
+        _data = {}
+
+    LLM_MODEL = _data.get("LLM_MODEL", "gpt-oss:20b") 
+    EMBEDDING_MODEL = _data.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    VECTOR_DB_PATH = _data.get("VECTOR_DB_PATH", "./chroma_db")
+    CHUNK_SIZE = _data.get("CHUNK_SIZE", 500)
+    CHUNK_OVERLAP = _data.get("CHUNK_OVERLAP", 50)
     # Paths for specific scripts
-    JOBS_FILE = "./jobs/processed_jobs_schema.json"
-    RESUME_FILE = "./cv/cv_ver2.pdf"
-    OUTPUT_DIR = "./output"
+    JOBS_FILE = _data.get("JOBS_FILE", "./jobs/processed_jobs_schema_all.json")
+    RESUME_FILE = _data.get("RESUME_FILE", "./cv/CV.md.pdf")
+    OUTPUT_DIR = _data.get("OUTPUT_DIR", "./output")
 # ==========================================
 # 2. Shared Types
 # ==========================================
