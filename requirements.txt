@@ -1,0 +1,17 @@
+# LangChain Core & Workflow
+langchain-core
+langgraph
+pydantic
+
+# LLM & Embeddings
+langchain-ollama
+langchain-huggingface
+sentence-transformers
+
+# Document Loading & Vector DB
+pypdf
+langchain-community
+chromadb
+
+# Utilities
+typing-extensions

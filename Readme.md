@@ -11,7 +11,7 @@ This project is a privacy-focused, local **Batch RAG (Retrieval-Augmented Genera
 Instead of sending personal data to cloud APIs, this system runs locally using **Ollama** and **ChromaDB**. It indexes a PDF resume, performs semantic searches against a database of job descriptions, and provides a structured "Gap Analysis" detailing exactly why a candidate matches (or doesn't match) a role.
 
 ## 🏗 System Architecture
-
+![Alt Text](./image.png)
 The application is built on a modular "Agentic" workflow:
 
 * **Orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) (Manages the state between retrieval and analysis nodes).
