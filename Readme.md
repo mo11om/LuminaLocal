@@ -1,7 +1,3 @@
-Here is a significantly improved and detailed `README.md`. I have expanded it to include installation instructions, expected data formats, configuration details, and an explanation of the output logic based on the code provided in `utils.py` and `update_apply.py`.
-
----
-
 # AI Resume Matcher & Gap Analyzer
 
 ## 📖 Overview
