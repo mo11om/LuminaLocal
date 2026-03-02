@@ -1,12 +1,12 @@
 {
     "LLM_MODEL": "gpt-oss:20b",
     "EMBEDDING_MODEL": "all-MiniLM-L6-v2",
-    "VECTOR_DB_PATH": "./chroma_db",
+    "VECTOR_DB_PATH": "./data/chroma_db",
     "CHUNK_SIZE": 500,
     "CHUNK_OVERLAP": 50,
-    "JOBS_FILE": "./jobs/processed_jobs_schema.json",
-    "RESUME_FILE": "./cv/CV.md.pdf",
-    "OUTPUT_DIR": "./output",
+    "JOBS_FILE": "./data/jobs/processed_jobs_schema.json",
+    "RESUME_FILE": "./data/raw/CV.md.pdf",
+    "OUTPUT_DIR": "./data/output",
     "RETRIEVER_K": 8,
     "ANALYSIS_OUTPUT_CSV": "analysis_results.csv"
 }

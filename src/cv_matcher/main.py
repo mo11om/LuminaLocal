@@ -2,7 +2,7 @@ import os
 import json
 import csv
 from typing import List, Literal
-from utils import Config, ResumeIngestor, BaseAgentState
+from .utils import Config, ResumeIngestor, BaseAgentState
 
 # ==========================================
 # UPDATED IMPORT: LangChain Ollama

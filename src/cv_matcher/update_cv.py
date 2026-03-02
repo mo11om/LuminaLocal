@@ -1,6 +1,6 @@
 import os
 from typing import List
-from utils import Config, ResumeIngestor, BaseAgentState
+from .utils import Config, ResumeIngestor, BaseAgentState
 
 # ==========================================
 # UPDATED IMPORT: LangChain Ollama

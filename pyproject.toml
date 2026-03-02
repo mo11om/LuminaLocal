@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cv-matcher"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain-core",
+    "langchain-community",
+    "langchain-ollama",
+    "langchain-huggingface",
+    "langgraph",
+    "chromadb",
+    "pypdf",
+    "sentence-transformers",
+    "pydantic",
+    "typing-extensions",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

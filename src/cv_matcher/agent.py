@@ -2,7 +2,7 @@ import os
 import json
 import csv
 from typing import List, Literal, TypedDict, Optional, Dict, Any
-from utils import Config, ResumeIngestor
+from .utils import Config, ResumeIngestor
 
 from langchain_ollama import OllamaLLM 
 from langchain_core.prompts import PromptTemplate

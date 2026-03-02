@@ -22,7 +22,7 @@ from langgraph.graph import StateGraph, END
 class Config:
     LLM_MODEL = "gpt-oss:20b" 
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    VECTOR_DB_PATH = "./chroma_db"
+    VECTOR_DB_PATH = "./data/chroma_db"
     CHUNK_SIZE = 500
     CHUNK_OVERLAP = 50
 # 定義 Prompt
@@ -286,7 +286,7 @@ class ResumeGraphBuilder:
 # 6. 主程式
 # ==========================================
 if __name__ == "__main__":
-    dummy_pdf_path = "cv_ver2.pdf" 
+    dummy_pdf_path = "./data/raw/cv_ver2.pdf"
 
     if os.path.exists(dummy_pdf_path):
         # 1. 準備資料

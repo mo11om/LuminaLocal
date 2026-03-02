@@ -12,7 +12,9 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # 1. Configuration (Shared)
 # ==========================================
 class Config:
-    _config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "./config.json")
+    # Resolve the project root (2 levels up from src/cv_matcher/utils.py)
+    _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _config_path = os.path.join(_project_root, "config.json")
     
     if os.path.exists(_config_path):
         with open(_config_path, "r") as f:
@@ -24,13 +26,13 @@ class Config:
 
     LLM_MODEL = _data.get("LLM_MODEL", "gpt-oss:20b") 
     EMBEDDING_MODEL = _data.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-    VECTOR_DB_PATH = _data.get("VECTOR_DB_PATH", "./chroma_db")
+    VECTOR_DB_PATH = _data.get("VECTOR_DB_PATH", "./data/chroma_db")
     CHUNK_SIZE = _data.get("CHUNK_SIZE", 500)
     CHUNK_OVERLAP = _data.get("CHUNK_OVERLAP", 50)
     # Paths for specific scripts
-    JOBS_FILE = _data.get("JOBS_FILE", "./jobs/processed_jobs_schema_all.json")
-    RESUME_FILE = _data.get("RESUME_FILE", "./cv/CV.md.pdf")
-    OUTPUT_DIR = _data.get("OUTPUT_DIR", "./output")
+    JOBS_FILE = _data.get("JOBS_FILE", "./data/jobs/processed_jobs_schema.json")
+    RESUME_FILE = _data.get("RESUME_FILE", "./data/raw/CV.md.pdf")
+    OUTPUT_DIR = _data.get("OUTPUT_DIR", "./data/output")
     
     # Hyperparameters
     RETRIEVER_K = _data.get("RETRIEVER_K", 8)
