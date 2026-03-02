@@ -1,0 +1,219 @@
+import os
+import json
+import csv
+from typing import List, Literal, TypedDict, Optional, Dict, Any
+from utils import Config, ResumeIngestor
+
+from langchain_ollama import OllamaLLM 
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from langgraph.graph import StateGraph, END
+from pydantic import BaseModel, Field
+
+# ==========================================
+# 1. Output Schema (From your original code)
+# ==========================================
+class AnalysisResult(BaseModel):
+    match_classification: Literal["High Match", "Medium Match", "Low Match", "No Match"] = Field(
+        description="The categorical fit. 'High Match': 90%+ critical skills. 'Medium Match': 60-90%. 'Low Match': <60%."
+    )
+    missing_critical_skills: List[str] = Field(
+        description="List of mandatory technical skills found in the JD but strictly missing in the resume."
+    )
+    missing_bonus_skills: List[str] = Field(
+        description="List of nice-to-have skills or 'bonus' qualifications missing from the resume."
+    )
+    keyword_optimization_suggestions: List[str] = Field(
+        description="Actionable advice on renaming skills or adding specific keywords to pass ATS."
+    )
+    brief_analysis: str = Field(
+        description="A concise, 2-sentence summary of why this classification was assigned."
+    )
+
+# ==========================================
+# 2. Agentic State
+# ==========================================
+class AgenticState(TypedDict):
+    job_info: Optional[Dict[str, Any]]
+    job_description: str
+    optimized_query: str  
+    context: str
+    analysis: str
+    feedback: str         
+    revision_count: int   
+
+# ==========================================
+# 3. Agentic LangGraph Workflow
+# ==========================================
+class AdvancedResumeGraphBuilder:
+    def __init__(self, vector_store):
+        self.vector_store = vector_store
+        self.llm = OllamaLLM(model=Config.LLM_MODEL)
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
+
+    def transform_query_node(self, state: AgenticState):
+        print("🪄  Node: Transforming JD into optimized search query...")
+        prompt = PromptTemplate.from_template(
+            "Extract a comma-separated list of the core programming languages, frameworks, "
+            "and tools from this job description. Do not include soft skills. JD: {jd}"
+        )
+        chain = prompt | self.llm
+        optimized_query = chain.invoke({"jd": state["job_description"]})
+        return {"optimized_query": optimized_query.strip()}
+
+    def retrieve_node(self, state: AgenticState):
+        print("🔍 Node: Retrieving context using optimized query...")
+        documents = self.retriever.invoke(state.get("optimized_query", state["job_description"]))
+        context_str = "\n\n".join([doc.page_content for doc in documents])
+        return {"context": context_str}
+
+    def analyze_node(self, state: AgenticState):
+        current_count = state.get("revision_count", 0)
+        print(f"🤖 Node: Generating Analysis (Draft {current_count + 1})...")
+        
+        parser = PydanticOutputParser(pydantic_object=AnalysisResult)
+        
+        # Inject feedback if the agent is correcting a hallucination
+        feedback_instruction = ""
+        if state.get("feedback") and "FAIL" in state.get("feedback"):
+            feedback_instruction = f"\n### CRITICAL FEEDBACK FROM PREVIOUS DRAFT:\n{state['feedback']}\nYou MUST fix these errors in your new JSON output."
+
+        CLASSIFICATION_TEMPLATE = """
+        <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        You are a Principal Staff Engineer acting as a Technical Recruiter.
+        
+        {format_instructions}
+        {feedback_instruction}
+        
+        ### CLASSIFICATION RULES:
+        1. **High Match**: Candidate possesses 90%+ of the "Must-Have" technical skills.
+        2. **Medium Match**: Candidate possesses 60-80% of "Must-Have" skills.
+        3. **Low Match**: Candidate lacks significant core technologies required.
+        4. **No Match**: Irrelevant background.
+        <|eot_id|>
+
+        <|start_header_id|>user<|end_header_id|>
+        ### TARGET JOB
+        Title: {job_title}
+        Requirements: {job_requirements}
+
+        ### CANDIDATE RESUME CONTEXT
+        {context}
+
+        Output the JSON result.
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
+        """
+
+        prompt = PromptTemplate(
+            template=CLASSIFICATION_TEMPLATE,
+            input_variables=["job_title", "job_requirements", "context", "feedback_instruction"],
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+
+        chain = prompt | self.llm | parser
+        job_info = state.get("job_info", {})
+
+        try:
+            structured_result = chain.invoke({
+                "job_title": job_info.get("job_title", "N/A"),
+                "job_requirements": job_info.get("requirements", ""),
+                "context": state["context"],
+                "feedback_instruction": feedback_instruction
+            })
+            return {"analysis": structured_result.model_dump_json(), "revision_count": current_count + 1}
+        except Exception as e:
+            return {"analysis": json.dumps({"error": str(e), "match_classification": "No Match"}), "revision_count": current_count + 1}
+
+    def reflect_node(self, state: AgenticState):
+        print("🧐 Node: Reflecting and Validating Output...")
+        reflection_prompt = PromptTemplate.from_template(
+            "You are an auditing algorithm. Review the generated JSON analysis against the resume context. "
+            "If the analysis claims a skill is missing but it ACTUALLY EXISTS in the context, output: 'FAIL: You claimed X is missing, but it is in the context.' "
+            "If the analysis is accurate, output exactly: 'PASS'."
+            "\n\nContext:\n{context}\n\nAnalysis:\n{analysis}"
+        )
+        chain = reflection_prompt | self.llm
+        feedback = chain.invoke({
+            "context": state["context"], 
+            "analysis": state["analysis"]
+        })
+        print(f"   -> Result: {feedback.strip()}")
+        return {"feedback": feedback.strip()}
+
+    def should_reanalyze(self, state: AgenticState) -> str:
+        if state.get("revision_count", 0) >= 3:
+            return END
+        if "FAIL" in state.get("feedback", ""):
+            print("🔄 Re-routing to Analyze Node to fix hallucinations...")
+            return "analyze"
+        return END
+
+    def build(self):
+        workflow = StateGraph(AgenticState)
+        workflow.add_node("transform_query", self.transform_query_node)
+        workflow.add_node("retrieve", self.retrieve_node)
+        workflow.add_node("analyze", self.analyze_node)
+        workflow.add_node("reflect", self.reflect_node)
+        
+        workflow.set_entry_point("transform_query")
+        workflow.add_edge("transform_query", "retrieve")
+        workflow.add_edge("retrieve", "analyze")
+        workflow.add_edge("analyze", "reflect")
+        workflow.add_conditional_edges("reflect", self.should_reanalyze, {"analyze": "analyze", END: END})
+        
+        return workflow.compile()
+
+# ==========================================
+# 4. Main Execution
+# ==========================================
+if __name__ == "__main__":
+    if not os.path.exists(Config.RESUME_FILE) or not os.path.exists(Config.JOBS_FILE):
+        print("❌ Error: Missing files.")
+        exit(1)
+
+    ingestor = ResumeIngestor()
+    vector_store = ingestor.get_vector_store(Config.RESUME_FILE)
+    
+    app = AdvancedResumeGraphBuilder(vector_store).build()
+
+    with open(Config.JOBS_FILE, 'r', encoding='utf-8') as f:
+        job_list = json.load(f)
+
+    results_summary = []
+    print(f"\n🚀 Starting AGENTIC Batch Analysis for {len(job_list)} jobs...\n")
+
+    for i, job in enumerate(job_list):
+        jd_query = f"{job.get('job_title', '')} {job.get('requirements', '')}"
+        inputs = {"job_info": job, "job_description": jd_query, "revision_count": 0}
+
+        try:
+            print(f"\n--- Processing Job {i+1}/{len(job_list)}: {job.get('job_title')} ---")
+            output = app.invoke(inputs)
+            result_json = json.loads(output["analysis"])
+            
+            results_summary.append({
+                "job_title": job.get('job_title'),
+                "classification": result_json.get('match_classification', 'Error'),
+                "analysis": result_json
+            })
+        except Exception as e:
+            print(f"❌ Failed: {e}")
+
+    # CSV Export Logic
+    csv_path = os.path.join(getattr(Config, 'OUTPUT_DIR', '.'), "agentic_" + Config.ANALYSIS_OUTPUT_CSV)
+    try:
+        with open(csv_path, mode='w', newline='', encoding='utf-8') as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=['Job Title', 'Classification', 'Missing Critical Skills', 'Brief Analysis'])
+            writer.writeheader()
+            for res in results_summary:
+                analysis = res['analysis']
+                writer.writerow({
+                    'Job Title': res['job_title'],
+                    'Classification': res['classification'],
+                    'Missing Critical Skills': ", ".join(analysis.get('missing_critical_skills', [])),
+                    'Brief Analysis': analysis.get('brief_analysis', '')
+                })
+        print(f"\n✅ Agentic execution complete. Results saved to {csv_path}")
+    except Exception as e:
+        print(f"❌ Error writing CSV: {e}")
