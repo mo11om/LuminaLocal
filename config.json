@@ -1,5 +1,6 @@
 {
-    "LLM_MODEL": "gpt-oss:20b",
+    "LLM_MODEL": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "VLLM_ENDPOINT": "http://vllm-service:8000/v1",
     "EMBEDDING_MODEL": "all-MiniLM-L6-v2",
     "VECTOR_DB_PATH": "./data/chroma_db",
     "CHUNK_SIZE": 500,

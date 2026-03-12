@@ -1,0 +1,139 @@
+---
+# vLLM Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: default
+spec:
+  selector:
+    app: vllm-server
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+
+---
+# vLLM Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-deployment
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm-server
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+    spec:
+      # Node selector for GPU availability (adjust based on your cluster)
+      nodeSelector:
+        amd.com/gpu: "true"
+      
+      # Tolerations for GPU nodes (adjust as needed)
+      tolerations:
+        - key: amd.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      
+      # Resource requests and limits
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        imagePullPolicy: IfNotPresent
+        
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        
+        # vLLM arguments for model loading and quantization
+        args:
+          - "--model"
+          - "meta-llama/Meta-Llama-3-8B-Instruct"
+          - "--quantization"
+          - "awq"
+          - "--dtype"
+          - "auto"
+          - "--gpu-memory-utilization"
+          - "0.9"
+          - "--max-model-len"
+          - "8192"
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+        
+        # Environment variables
+        env:
+        - name: HIP_VISIBLE_DEVICES
+          value: "0"
+        - name: VLLM_ATTENTION_BACKEND
+          value: "flash_attn"
+        
+        resources:
+          requests:
+            amd.com/gpu: 1
+            memory: "16Gi"
+            cpu: "4"
+          limits:
+            amd.com/gpu: 1
+            memory: "20Gi"
+            cpu: "8"
+        
+        # Liveness and readiness probes
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Volume mounts for model cache (optional)
+        volumeMounts:
+        - name: model-cache
+          mountPath: /root/.cache/huggingface
+      
+      # Volumes
+      volumes:
+      - name: model-cache
+        emptyDir: {}
+      
+      # Pod restart policy
+      restartPolicy: Always
+      
+      # Service account (if RBAC is enabled)
+      serviceAccountName: default
+      
+      # Affinity rules (optional - for pod distribution)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - vllm-server
+              topologyKey: kubernetes.io/hostname

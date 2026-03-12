@@ -1,0 +1,62 @@
+# Docker build context exclusions
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.sublime-project
+.sublime-workspace
+
+# Version Control
+.git/
+.gitignore
+.github/
+
+# CI/CD
+.gitlab-ci.yml
+.github/workflows/
+.travis.yml
+
+# Documentation
+*.md
+docs/
+
+# Large files
+*.tar.gz
+*.zip
+*.tar
+
+# Database files (if large)
+chroma.sqlite3
+
+# Output/Logs
+logs/
+*.log

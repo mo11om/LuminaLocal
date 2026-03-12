@@ -3,9 +3,9 @@ from typing import List
 from .utils import Config, ResumeIngestor, BaseAgentState
 
 # ==========================================
-# UPDATED IMPORT: LangChain Ollama
+# UPDATED IMPORT: LangChain OpenAI (vLLM compatible)
 # ==========================================
-from langchain_ollama import OllamaLLM  # <--- FIXED
+from langchain_openai import ChatOpenAI
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
@@ -38,8 +38,13 @@ class AnalysisResult(BaseModel):
 class ResumeGraphBuilder:
     def __init__(self, vector_store):
         self.vector_store = vector_store
-        # UPDATED: Use OllamaLLM instead of Ollama
-        self.llm = OllamaLLM(model=Config.LLM_MODEL) # <--- FIXED
+        self.llm = ChatOpenAI(
+            model=Config.LLM_MODEL,
+            base_url=Config.VLLM_ENDPOINT,
+            api_key="EMPTY",
+            max_tokens=2048,
+            temperature=0.1
+        )
         self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 4})
 
     def retrieve_node(self, state: BaseAgentState):

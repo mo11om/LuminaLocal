@@ -4,7 +4,7 @@ import csv
 from typing import List, Literal, TypedDict, Optional, Dict, Any
 from .utils import Config, ResumeIngestor
 
-from langchain_ollama import OllamaLLM 
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import StateGraph, END
@@ -48,7 +48,13 @@ class AgenticState(TypedDict):
 class AdvancedResumeGraphBuilder:
     def __init__(self, vector_store):
         self.vector_store = vector_store
-        self.llm = OllamaLLM(model=Config.LLM_MODEL)
+        self.llm = ChatOpenAI(
+            model=Config.LLM_MODEL,
+            base_url=Config.VLLM_ENDPOINT,
+            api_key="EMPTY",
+            max_tokens=2048,
+            temperature=0.1
+        )
         self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
 
     def transform_query_node(self, state: AgenticState):

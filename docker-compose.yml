@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # vLLM OpenAI-Compatible API Server (AMD GPU with ROCm)
+  # vllm:
+  #   image: vllm/vllm-openai-rocm:latest
+  #   container_name: cv-matcher-vllm
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - VLLM_DEVICE=amd
+  #     - HIP_VISIBLE_DEVICES=0
+  #   volumes:
+  #     - ./hf-model-cache:/root/.cache/huggingface
+  #   command: >
+  #     --model meta-llama/Meta-Llama-3-8B-Instruct
+  #     --quantization awq
+  #     --dtype auto
+  #     --gpu-memory-utilization 0.9
+  #     --max-model-len 8192
+  #     --host 0.0.0.0
+  #     --port 8000
+  #   # Deploy configuration (AMD GPU)
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: amd
+  #             count: 1
+  #             capabilities: [gpu]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 120s
+  #   restart: unless-stopped
+  #   devices:
+  #     - "/dev/kfd"
+  #     - "/dev/dri"
+
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: cv-matcher-vllm
+    ports:
+      - "8000:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./hf-model-cache:/root/.cache/huggingface
+    command: >
+      --model meta-llama/Meta-Llama-3-8B-Instruct
+      --quantization awq
+      --dtype auto
+      --gpu-memory-utilization 0.9
+      --max-model-len 8192
+      --host 0.0.0.0
+      --port 8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  # CV Matcher Application (Batch Job)
+  cv-matcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cv-matcher-app
+    depends_on:
+      vllm:
+        condition: service_healthy
+    environment:
+      - VLLM_ENDPOINT=http://vllm:8000/v1
+      - LLM_MODEL=meta-llama/Meta-Llama-3-8B-Instruct
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - OUTPUT_DIR=/data/output
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    # Override CMD to keep container running for testing
+    # Uncomment to debug/test interactively
+    # stdin_open: true
+    # tty: true
+    # command: /bin/bash
+    entrypoint: bash -c "source /opt/conda/bin/activate job && python -m cv_matcher.main"
+    restart: "no"
+
+networks:
+  default:
+    name: cv-matcher-network
+    driver: bridge

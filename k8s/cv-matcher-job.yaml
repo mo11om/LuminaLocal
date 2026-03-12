@@ -1,0 +1,188 @@
+---
+# Persistent Volume Claim for CSV output storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cv-matcher-output-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+
+---
+# ConfigMap for configuration (optional, overrides config.json)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cv-matcher-config
+  namespace: default
+data:
+  config.json: |
+    {
+      "LLM_MODEL": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "VLLM_ENDPOINT": "http://vllm-service:8000/v1",
+      "EMBEDDING_MODEL": "all-MiniLM-L6-v2",
+      "VECTOR_DB_PATH": "./data/chroma_db",
+      "CHUNK_SIZE": 500,
+      "CHUNK_OVERLAP": 50,
+      "JOBS_FILE": "./data/jobs/processed_jobs_schema.json",
+      "RESUME_FILE": "./data/raw/CV.md.pdf",
+      "OUTPUT_DIR": "./data/output",
+      "RETRIEVER_K": 8,
+      "ANALYSIS_OUTPUT_CSV": "analysis_results.csv"
+    }
+
+---
+# Kubernetes Job for CV Matcher Batch Processing
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cv-matcher-job
+  namespace: default
+spec:
+  # Job configuration
+  parallelism: 1
+  completions: 1
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600  # Clean up job after 1 hour
+  
+  # Pod template specification
+  template:
+    metadata:
+      labels:
+        app: cv-matcher
+        job-name: cv-matcher-job
+    spec:
+      # Restart policy for failed pods
+      restartPolicy: Never
+      
+      # Service account for RBAC
+      serviceAccountName: default
+      
+      # Pod-level security context
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+      
+      # Affinity: Schedule near vLLM service if possible
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - vllm-server
+              topologyKey: kubernetes.io/hostname
+      
+      # Container specification
+      containers:
+      - name: cv-matcher
+        # Image should be built and pushed to your registry
+        # Example: docker.io/your-org/cv-matcher:latest
+        image: cv-matcher:latest
+        imagePullPolicy: IfNotPresent
+        
+        # Container-level security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+        
+        # Environment variables
+        env:
+        # vLLM service endpoint (injected from vllm-service)
+        - name: VLLM_ENDPOINT
+          value: "http://vllm-service:8000/v1"
+        
+        # LLM model name
+        - name: LLM_MODEL
+          value: "meta-llama/Meta-Llama-3-8B-Instruct"
+        
+        # Embedding model
+        - name: EMBEDDING_MODEL
+          value: "all-MiniLM-L6-v2"
+        
+        # Output directory
+        - name: OUTPUT_DIR
+          value: "/data/output"
+        
+        # Python optimization flags
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        
+        # Log level
+        - name: LOG_LEVEL
+          value: "INFO"
+        
+        # Resource requests and limits
+        resources:
+          requests:
+            cpu: "2"
+            memory: "4Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+        
+        # Liveness and readiness probes
+        livenessProbe:
+          exec:
+            command:
+              - sh
+              - -c
+              - ps aux | grep -q "[p]ython -m cv_matcher.main" || exit 1
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # Volume mounts
+        volumeMounts:
+        # Output volume for CSV results
+        - name: output-volume
+          mountPath: /data/output
+        
+        # Config volume (optional - to override config.json)
+        - name: config-volume
+          mountPath: /app/config.json
+          subPath: config.json
+      
+      # Volumes
+      volumes:
+      # PVC for output
+      - name: output-volume
+        persistentVolumeClaim:
+          claimName: cv-matcher-output-pvc
+      
+      # ConfigMap volume
+      - name: config-volume
+        configMap:
+          name: cv-matcher-config
+          items:
+          - key: config.json
+            path: config.json
+
+---
+# Service to expose job metrics/logs (optional)
+apiVersion: v1
+kind: Service
+metadata:
+  name: cv-matcher-service
+  namespace: default
+spec:
+  selector:
+    app: cv-matcher
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP

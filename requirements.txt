@@ -4,7 +4,7 @@ langgraph
 pydantic
 
 # LLM & Embeddings
-langchain-ollama
+langchain-openai
 langchain-huggingface
 sentence-transformers
 
