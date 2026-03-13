@@ -15,3 +15,5 @@ chromadb
 
 # Utilities
 typing-extensions
+openai
+python-dotenv

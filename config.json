@@ -2,11 +2,15 @@
     "LLM_MODEL": "gpt-oss:20b",
     "EMBEDDING_MODEL": "all-MiniLM-L6-v2",
     "VECTOR_DB_PATH": "./data/chroma_db",
-    "CHUNK_SIZE": 500,
-    "CHUNK_OVERLAP": 50,
+    "CHUNK_SIZE": 300,
+    "CHUNK_OVERLAP": 30,
     "JOBS_FILE": "./data/jobs/processed_jobs_schema.json",
     "RESUME_FILE": "./data/raw/CV.md.pdf",
     "OUTPUT_DIR": "./data/output",
     "RETRIEVER_K": 8,
-    "ANALYSIS_OUTPUT_CSV": "analysis_results.csv"
+    "ANALYSIS_OUTPUT_CSV": "analysis_results.csv",
+    "GPT_MODEL": "gpt-4.1-nano",
+    "GPT_TEMPERATURE": 0.3,
+    "GPT_MAX_TOKENS": 500,
+    "ENABLE_GPT_BASELINE": false
 }
