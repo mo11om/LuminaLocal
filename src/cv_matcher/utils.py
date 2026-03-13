@@ -1,6 +1,10 @@
 import os
 import json
 from typing import TypedDict, Optional, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # LangChain / Community Imports
 from langchain_community.document_loaders import PyPDFLoader
@@ -37,6 +41,12 @@ class Config:
     # Hyperparameters
     RETRIEVER_K = _data.get("RETRIEVER_K", 8)
     ANALYSIS_OUTPUT_CSV = _data.get("ANALYSIS_OUTPUT_CSV", "analysis_results.csv")
+    
+    # GPT Baseline Configuration
+    GPT_MODEL = _data.get("GPT_MODEL", "gpt-4o")
+    GPT_TEMPERATURE = _data.get("GPT_TEMPERATURE", 0.3)
+    GPT_MAX_TOKENS = _data.get("GPT_MAX_TOKENS", 500)
+    ENABLE_GPT_BASELINE = _data.get("ENABLE_GPT_BASELINE", True)
 # ==========================================
 # 2. Shared Types
 # ==========================================

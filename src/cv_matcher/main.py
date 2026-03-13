@@ -3,6 +3,7 @@ import json
 import csv
 from typing import List, Literal
 from .utils import Config, ResumeIngestor, BaseAgentState
+from .gpt_baseline import get_gpt_baseline
 
 # ==========================================
 # UPDATED IMPORT: LangChain Ollama
@@ -154,6 +155,9 @@ if __name__ == "__main__":
         }
 
         try:
+            # ==========================================
+            # LOCAL AGENT ANALYSIS
+            # ==========================================
             output = app.invoke(inputs)
             result_json = json.loads(output["analysis"])
             
@@ -166,8 +170,42 @@ if __name__ == "__main__":
             results_summary.append({
                 "job_title": job.get('job_title'),
                 "classification": classification,
-                "analysis": result_json
+                "analysis": result_json,
+                "gpt_baseline": None  # Will be populated if API key exists
             })
+            
+            # ==========================================
+            # GPT BASELINE ANALYSIS (Optional)
+            # ==========================================
+            if os.getenv("OPENAI_API_KEY") and Config.ENABLE_GPT_BASELINE:
+                try:
+                    print(f"   📡 Fetching GPT-4o baseline...")
+                    gpt_result = get_gpt_baseline(
+                        job_title=job.get('job_title', 'Unknown'),
+                        requirements=job.get('requirements', ''),
+                        resume_context=output.get('context', '')
+                    )
+                    
+                    # Store GPT baseline result
+                    results_summary[-1]["gpt_baseline"] = gpt_result
+                    
+                    # Print comparison
+                    print(f"\n   {'='*70}")
+                    print(f"   SIDE-BY-SIDE COMPARISON: {job.get('job_title')}")
+                    print(f"   {'='*70}")
+                    print(f"   LOCAL AGENT RESULT:")
+                    print(f"      Classification: {classification}")
+                    print(f"      Missing Critical Skills: {result_json.get('missing_critical_skills', [])}")
+                    print(f"      Brief Analysis: {result_json.get('brief_analysis', 'N/A')}")
+                    print(f"   ")
+                    print(f"   {Config.GPT_MODEL} BASELINE RESULT:")
+                    print(f"      Classification: {gpt_result.get('match_classification', 'Error')}")
+                    print(f"      Missing Critical Skills: {gpt_result.get('missing_critical_skills', [])}")
+                    print(f"      Brief Analysis: {gpt_result.get('brief_analysis', 'N/A')}")
+                    print(f"   {'='*70}\n")
+                    
+                except Exception as e:
+                    print(f"   ⚠️ GPT Baseline Error: {e}")
                 
         except Exception as e:
             print(f"[{i+1}] ❌ Failed to process: {e}")
