@@ -18,9 +18,44 @@ from pydantic import BaseModel, Field
 # ==========================================
 # Output Schema
 # ==========================================
+# class AnalysisResult(BaseModel):
+#     match_classification: Literal["High Match", "Medium Match", "Low Match", "No Match"] = Field(
+#         description="The categorical fit. 'High Match': 70%+ critical skills. 'Medium Match': 40-70%. 'Low Match': <30%."
+#     )
+#     missing_critical_skills: List[str] = Field(
+#         description="List of mandatory technical skills found in the JD but strictly missing in the resume."
+#     )
+#     missing_bonus_skills: List[str] = Field(
+#         description="List of nice-to-have skills or 'bonus' qualifications missing from the resume."
+#     )
+#     keyword_optimization_suggestions: List[str] = Field(
+#         description="Actionable advice on renaming skills or adding specific keywords to pass ATS."
+#     )
+#     brief_analysis: str = Field(
+#         description="A concise, 2-sentence summary of why this classification was assigned."
+#     )
+
+# class AnalysisResult(BaseModel):
+#     match_classification: Literal["Strong Match", "Good Match", "No Match"] = Field(
+#         description="The categorical fit. 'Strong Match': 70%+ critical skills. 'Good Match': 40-70%. 'No Match': <40% or irrelevant."
+#     )
+#     missing_critical_skills: List[str] = Field(
+#         description="List of mandatory technical skills found in the JD but strictly missing in the resume."
+#     )
+#     missing_bonus_skills: List[str] = Field(
+#         description="List of nice-to-have skills or 'bonus' qualifications missing from the resume."
+#     )
+#     # Keeping brief_analysis is highly recommended so the LLM has space to "think" 
+#     # and explain its reasoning before outputting the final JSON, reducing hallucinations.
+#     brief_analysis: str = Field(
+#         description="A concise, 1-2 sentence summary of why this classification was assigned."
+#     )
 class AnalysisResult(BaseModel):
-    match_classification: Literal["High Match", "Medium Match", "Low Match", "No Match"] = Field(
-        description="The categorical fit. 'High Match': 90%+ critical skills. 'Medium Match': 60-90%. 'Low Match': <60%."
+    match_classification: Literal["Strong Match", "Good Match", "No Match"] = Field(
+        description="The categorical fit. 'Strong Match': 70%+ critical skills. 'Good Match': 40-70%. 'No Match': <40% or irrelevant."
+    )
+    matching_skills: List[str] = Field(
+        description="List of key technical skills found in BOTH the Job Description and the Candidate's Resume."
     )
     missing_critical_skills: List[str] = Field(
         description="List of mandatory technical skills found in the JD but strictly missing in the resume."
@@ -28,13 +63,9 @@ class AnalysisResult(BaseModel):
     missing_bonus_skills: List[str] = Field(
         description="List of nice-to-have skills or 'bonus' qualifications missing from the resume."
     )
-    keyword_optimization_suggestions: List[str] = Field(
-        description="Actionable advice on renaming skills or adding specific keywords to pass ATS."
-    )
-    brief_analysis: str = Field(
-        description="A concise, 2-sentence summary of why this classification was assigned."
-    )
-
+    # brief_analysis: str = Field(
+    #     description="A concise, 1-2 sentence summary of why this classification was assigned."
+    # )
 # ==========================================
 # LangGraph Workflow
 # ==========================================
@@ -53,6 +84,37 @@ class ResumeGraphBuilder:
     def analyze_node(self, state: BaseAgentState):
         parser = PydanticOutputParser(pydantic_object=AnalysisResult)
 
+        # CLASSIFICATION_TEMPLATE = """
+        # <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        # You are a Principal Staff Engineer acting as a Technical Recruiter.
+        # Your goal is to classify the candidate's fit for a specific role based strictly on the provided context.
+        
+        # {format_instructions}
+        
+        # ### CLASSIFICATION RULES:
+        # 1. **High Match**: Candidate possesses 90%+ of the "Must-Have" technical skills found in the JD.
+        # 2. **Medium Match**: Candidate possesses 60-80% of "Must-Have" skills or has strong transferrable skills.
+        # 3. **Low Match**: Candidate lacks significant core technologies required (e.g., JD needs Java, Resume only has Python).
+        # 4. **No Match**: Irrelevant background.
+
+        # Analyze objectively. Do not hallucinate skills not present in the RESUME CONTEXT.
+        # <|eot_id|>
+
+        # <|start_header_id|>user<|end_header_id|>
+        # ### TARGET JOB
+        # Title: {job_title}
+        # Department: {job_department}
+        # Requirements:
+        # {job_requirements}
+
+        # ### CANDIDATE RESUME CONTEXT
+        # {context}
+
+        # ### INSTRUCTIONS
+        # Perform the Gap Analysis and output the JSON result.
+        # <|eot_id|>
+        # <|start_header_id|>assistant<|end_header_id|>
+        # """
         CLASSIFICATION_TEMPLATE = """
         <|begin_of_text|><|start_header_id|>system<|end_header_id|>
         You are a Principal Staff Engineer acting as a Technical Recruiter.
@@ -61,12 +123,11 @@ class ResumeGraphBuilder:
         {format_instructions}
         
         ### CLASSIFICATION RULES:
-        1. **High Match**: Candidate possesses 90%+ of the "Must-Have" technical skills found in the JD.
-        2. **Medium Match**: Candidate possesses 60-80% of "Must-Have" skills or has strong transferrable skills.
-        3. **Low Match**: Candidate lacks significant core technologies required (e.g., JD needs Java, Resume only has Python).
-        4. **No Match**: Irrelevant background.
+        1. **Strong Match**: Candidate possesses 90%+ of the "Must-Have" technical skills found in the JD.
+        2. **Good Match**: Candidate possesses 60-80% of "Must-Have" skills or has strong transferrable skills.
+        3. **No Match**: Candidate lacks significant core technologies required (e.g., <60% match) or has a completely irrelevant background.
 
-        Analyze objectively. Do not hallucinate skills not present in the RESUME CONTEXT.
+        Analyze objectively. Extract the matching skills, missing critical skills, and missing bonus skills. Do not hallucinate skills not present in the RESUME CONTEXT.
         <|eot_id|>
 
         <|start_header_id|>user<|end_header_id|>
@@ -84,7 +145,6 @@ class ResumeGraphBuilder:
         <|eot_id|>
         <|start_header_id|>assistant<|end_header_id|>
         """
-
         prompt = PromptTemplate(
             template=CLASSIFICATION_TEMPLATE,
             input_variables=["job_title", "job_department", "job_requirements", "context"],
@@ -151,7 +211,7 @@ if __name__ == "__main__":
             "job_info": job,
             "job_description": jd_query, 
             "context": "",
-            "analysis": ""
+            # "analysis": ""
         }
 
         try:
@@ -196,12 +256,12 @@ if __name__ == "__main__":
                     print(f"   LOCAL AGENT RESULT:")
                     print(f"      Classification: {classification}")
                     print(f"      Missing Critical Skills: {result_json.get('missing_critical_skills', [])}")
-                    print(f"      Brief Analysis: {result_json.get('brief_analysis', 'N/A')}")
+                    # print(f"      Brief Analysis: {result_json.get('brief_analysis', 'N/A')}")
                     print(f"   ")
                     print(f"   {Config.GPT_MODEL} BASELINE RESULT:")
                     print(f"      Classification: {gpt_result.get('match_classification', 'Error')}")
                     print(f"      Missing Critical Skills: {gpt_result.get('missing_critical_skills', [])}")
-                    print(f"      Brief Analysis: {gpt_result.get('brief_analysis', 'N/A')}")
+                    # print(f"      Brief Analysis: {gpt_result.get('brief_analysis', 'N/A')}")
                     print(f"   {'='*70}\n")
                     
                 except Exception as e:
@@ -231,8 +291,50 @@ if __name__ == "__main__":
             print(f"\n🔹 [{res['classification']}] {res['job_title']}")
             # Use .get() safely in case of 'No Match' errors lacking these fields
             print(f"   Missing Critical: {res['analysis'].get('missing_critical_skills', [])}")
-            print(f"   Summary: {res['analysis'].get('brief_analysis', 'N/A')}")
+            # print(f"   Summary: {res['analysis'].get('brief_analysis', 'N/A')}")
 
+        # ==========================================
+        # CSV EXPORT LOGIC
+        # ==========================================
+        # csv_filename = Config.ANALYSIS_OUTPUT_CSV
+        # output_dir = getattr(Config, 'OUTPUT_DIR', '.')
+        # if not os.path.exists(output_dir):
+        #     os.makedirs(output_dir)
+            
+        # csv_path = os.path.join(output_dir, csv_filename)
+
+        # print(f"\n💾 Saving all {len(results_summary)} results to CSV: {csv_path}")
+        
+        # try:
+        #     with open(csv_path, mode='w', newline='', encoding='utf-8') as csv_file:
+        #         fieldnames = [
+        #             'Job Title', 
+        #             'Classification', 
+        #             'Missing Critical Skills', 
+        #             'Missing Bonus Skills', 
+        #             'Keyword Optimization', 
+        #             'Brief Analysis'
+        #         ]
+        #         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        #         writer.writeheader()
+
+        #         for res in results_summary:
+        #             analysis = res['analysis']
+                    
+        #             # Helper to flatten lists safely (handles missing keys for Low/No match)
+        #             def flatten_list(lst):
+        #                 if not lst: return ""
+        #                 return ", ".join(lst) if isinstance(lst, list) else str(lst)
+
+        #             writer.writerow({
+        #                 'Job Title': res['job_title'],
+        #                 'Classification': res['classification'],
+        #                 'Missing Critical Skills': flatten_list(analysis.get('missing_critical_skills')),
+        #                 'Missing Bonus Skills': flatten_list(analysis.get('missing_bonus_skills')),
+        #                 'Keyword Optimization': flatten_list(analysis.get('keyword_optimization_suggestions')),
+        #                 'Brief Analysis': analysis.get('brief_analysis', '')
+        #             })
+        #     print("✅ CSV export complete.")
         # ==========================================
         # CSV EXPORT LOGIC
         # ==========================================
@@ -250,10 +352,9 @@ if __name__ == "__main__":
                 fieldnames = [
                     'Job Title', 
                     'Classification', 
+                    'Matching Skills',
                     'Missing Critical Skills', 
-                    'Missing Bonus Skills', 
-                    'Keyword Optimization', 
-                    'Brief Analysis'
+                    'Missing Bonus Skills'
                 ]
                 writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
                 writer.writeheader()
@@ -269,10 +370,9 @@ if __name__ == "__main__":
                     writer.writerow({
                         'Job Title': res['job_title'],
                         'Classification': res['classification'],
+                        'Matching Skills': flatten_list(analysis.get('matching_skills')),
                         'Missing Critical Skills': flatten_list(analysis.get('missing_critical_skills')),
-                        'Missing Bonus Skills': flatten_list(analysis.get('missing_bonus_skills')),
-                        'Keyword Optimization': flatten_list(analysis.get('keyword_optimization_suggestions')),
-                        'Brief Analysis': analysis.get('brief_analysis', '')
+                        'Missing Bonus Skills': flatten_list(analysis.get('missing_bonus_skills'))
                     })
             print("✅ CSV export complete.")
             
