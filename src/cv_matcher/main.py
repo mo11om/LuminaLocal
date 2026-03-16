@@ -57,8 +57,14 @@ class AnalysisResult(BaseModel):
     matching_skills: List[str] = Field(
         description="List of key technical skills found in BOTH the Job Description and the Candidate's Resume."
     )
+    matched_critical_skills: List[str] = Field(
+        description="List of mandatory technical skills from the JD that ARE present in the resume."
+    )
     missing_critical_skills: List[str] = Field(
         description="List of mandatory technical skills found in the JD but strictly missing in the resume."
+    )
+    matched_bonus_skills: List[str] = Field(
+        description="List of nice-to-have skills or 'bonus' qualifications that ARE present in the resume."
     )
     missing_bonus_skills: List[str] = Field(
         description="List of nice-to-have skills or 'bonus' qualifications missing from the resume."
@@ -127,7 +133,7 @@ class ResumeGraphBuilder:
         2. **Good Match**: Candidate possesses 60-80% of "Must-Have" skills or has strong transferrable skills.
         3. **No Match**: Candidate lacks significant core technologies required (e.g., <60% match) or has a completely irrelevant background.
 
-        Analyze objectively. Extract the matching skills, missing critical skills, and missing bonus skills. Do not hallucinate skills not present in the RESUME CONTEXT.
+        Analyze objectively. Extract the matching skills, matched critical skills, missing critical skills, matched bonus skills, and missing bonus skills. Do not hallucinate skills not present in the RESUME CONTEXT.
         <|eot_id|>
 
         <|start_header_id|>user<|end_header_id|>
@@ -290,7 +296,10 @@ if __name__ == "__main__":
         for res in results_summary:
             print(f"\n🔹 [{res['classification']}] {res['job_title']}")
             # Use .get() safely in case of 'No Match' errors lacking these fields
-            print(f"   Missing Critical: {res['analysis'].get('missing_critical_skills', [])}")
+            print(f"   Matched Critical : {res['analysis'].get('matched_critical_skills', [])}")
+            print(f"   Missing Critical : {res['analysis'].get('missing_critical_skills', [])}")
+            print(f"   Matched Bonus    : {res['analysis'].get('matched_bonus_skills', [])}")
+            print(f"   Missing Bonus    : {res['analysis'].get('missing_bonus_skills', [])}")
             # print(f"   Summary: {res['analysis'].get('brief_analysis', 'N/A')}")
 
         # ==========================================
@@ -353,7 +362,9 @@ if __name__ == "__main__":
                     'Job Title', 
                     'Classification', 
                     'Matching Skills',
+                    'Matched Critical Skills',
                     'Missing Critical Skills', 
+                    'Matched Bonus Skills',
                     'Missing Bonus Skills'
                 ]
                 writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
@@ -371,7 +382,9 @@ if __name__ == "__main__":
                         'Job Title': res['job_title'],
                         'Classification': res['classification'],
                         'Matching Skills': flatten_list(analysis.get('matching_skills')),
+                        'Matched Critical Skills': flatten_list(analysis.get('matched_critical_skills')),
                         'Missing Critical Skills': flatten_list(analysis.get('missing_critical_skills')),
+                        'Matched Bonus Skills': flatten_list(analysis.get('matched_bonus_skills')),
                         'Missing Bonus Skills': flatten_list(analysis.get('missing_bonus_skills'))
                     })
             print("✅ CSV export complete.")
