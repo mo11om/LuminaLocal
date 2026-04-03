@@ -4,6 +4,8 @@ import re
 import csv
 from typing import List, Literal, TypedDict, Dict, Any, Optional
 from pydantic import BaseModel, Field
+from typing import List, Literal, TypedDict, Optional, Dict, Any
+from .utils import Config, ResumeIngestor, BaseAgentState
 
 # LangGraph & LangChain imports
 from langgraph.graph import StateGraph, END
@@ -260,6 +262,7 @@ if __name__ == "__main__":
         model_name=ENGINE
     ).build()
 
+    print(f"\n📂 Loading Job Descriptions from {Config.JOBS_FILE}...")
     with open(Config.JOBS_FILE, 'r', encoding='utf-8') as f:
         job_list = json.load(f)
 
