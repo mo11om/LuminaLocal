@@ -1,12 +1,13 @@
 import os
 import json
+import re
 import csv
 from typing import List, Literal, TypedDict, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 # LangGraph & LangChain imports
 from langgraph.graph import StateGraph, END
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 
 # Provider imports for the Factory
@@ -45,54 +46,60 @@ class AgenticState(TypedDict):
     job_info: Dict[str, Any]
 
 # ==========================================
-# 3. LLM Provider Factory (CRITICAL REQUIREMENT)
+# 3. LLM Provider Factory (UPDATED: Added json_mode flag)
 # ==========================================
 class LLMFactory:
     @staticmethod
-    def get_llm(provider: str, model_name: str, **kwargs):
+    def get_llm(provider: str, model_name: str, json_mode: bool = False, **kwargs):
         provider = provider.lower()
         temperature = kwargs.get("temperature", 0.1)
 
         if provider == "openai":
             if not os.getenv("OPENAI_API_KEY"):
                 raise ValueError("OPENAI_API_KEY environment variable is required for OpenAI provider.")
-            # OpenAI can also be forced into JSON mode by passing model_kwargs
+            model_kwargs = {"response_format": {"type": "json_object"}} if json_mode else {}
             return ChatOpenAI(
                 model=model_name, 
                 temperature=temperature,
-                model_kwargs={"response_format": {"type": "json_object"}}
+                model_kwargs=model_kwargs
             )
             
         elif provider == "ollama":
             base_url = kwargs.get("base_url", "http://localhost:11434")
-            # CRITICAL FIX: Add format="json" here
+            # Only apply format="json" if requested by the node
             return ChatOllama(
                 model=model_name, 
                 temperature=temperature, 
                 base_url=base_url, 
-                format="json" 
+                **({"format": "json"} if json_mode else {})
             )
             
         elif provider == "vllm":
             base_url = kwargs.get("base_url", "http://localhost:8000/v1")
             api_key = os.getenv("VLLM_API_KEY", "EMPTY") 
+            model_kwargs = {"response_format": {"type": "json_object"}} if json_mode else {}
             return ChatOpenAI(
                 model=model_name, 
                 temperature=temperature, 
                 openai_api_base=base_url, 
                 openai_api_key=api_key,
-                model_kwargs={"response_format": {"type": "json_object"}}
+                model_kwargs=model_kwargs
             )
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
+
 # ==========================================
 # 4. Agentic LangGraph Workflow
 # ==========================================
 class MultiProviderResumeGraphBuilder:
     def __init__(self, vector_store, provider: str, model_name: str, **llm_kwargs):
         self.vector_store = vector_store
-        self.llm = LLMFactory.get_llm(provider, model_name, **llm_kwargs)
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 8})
+        
+        # Instantiate two separate models based on the required task output
+        self.json_llm = LLMFactory.get_llm(provider, model_name, json_mode=False, **llm_kwargs)
+        self.text_llm = LLMFactory.get_llm(provider, model_name, json_mode=False, **llm_kwargs)
+        
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
 
     def retrieve_node(self, state: AgenticState):
         print("🔍 Node: Retrieving context...")
@@ -104,39 +111,31 @@ class MultiProviderResumeGraphBuilder:
         current_count = state.get("revision_count", 0)
         print(f"🤖 Node: Generating Analysis (Draft {current_count + 1})...")
         
-        parser = PydanticOutputParser(pydantic_object=AnalysisResult)
-        
-        # Inject feedback from the critique node if this is a revision
         feedback_instruction = ""
         if state.get("feedback") and "FAIL" in state.get("feedback", ""):
-            feedback_instruction = f"\n### CRITIQUE FROM PREVIOUS ATTEMPT:\n{state['feedback']}\nFix these hallucinations in your new JSON output."
+            feedback_instruction = f"\n### CRITIQUE FROM PREVIOUS ATTEMPT:\n{state['feedback']}\nFix these hallucinations."
 
-        
-        PROMPT_TEMPLATE = """You are a Principal Staff Engineer acting as a Technical Recruiter.
+        # FIXED SYSTEM PROMPT: Manually defining the schema so the local model understands it easily
+        system_prompt = """You are a Principal Staff Engineer acting as a Technical Recruiter.
         Your goal is to perform a gap analysis and classify the candidate's fit.
 
-        {format_instructions}
         {feedback_instruction}
 
         ### CLASSIFICATION RULES:
-        1. **Strong Match**: Candidate possesses 70%+ of the "Must-Have" technical skills found in the JD.
-        2. **Good Match**: Candidate possesses 40-70% of "Must-Have" skills or has strong transferrable skills.
-        3. **No Match**: Candidate lacks significant core technologies required (e.g., <40% match) or has a completely irrelevant background.
+        1. **Strong Match**: Candidate possesses 70%+ of the "Must-Have" technical skills.
+        2. **Good Match**: Candidate possesses 40-70% of "Must-Have" skills.
+        3. **No Match**: Candidate lacks core technologies (<40% match).
 
-        ### INSTRUCTIONS:
-        - Handle synonyms intelligently (e.g., AWS vs Amazon Web Services).
-        - DO NOT hallucinate skills that are not explicitly found in the RESUME CONTEXT.
-        - CRITICAL: Output ONLY a valid JSON data instance containing your final analysis. DO NOT output the JSON schema definition. DO NOT include keys like "properties" or "type".
+        ### JSON OUTPUT INSTRUCTIONS:
+        You must output EXACTLY AND ONLY a valid JSON object. Do not include markdown formatting or conversational text.
+        Your JSON must contain EXACTLY these four keys:
+        - "match_classification": strictly "Strong Match", "Good Match", or "No Match"
+        - "missing_critical_skills": array of strings
+        - "missing_soft_skills": array of strings
+        - "brief_analysis": string, concise 2-sentence summary
+        """
 
-        ### EXAMPLE OF REQUIRED JSON INSTANCE OUTPUT:
-        {{
-            "match_classification": "Good Match",
-            "missing_critical_skills": ["Kubernetes", "Docker"],
-            "missing_soft_skills": ["Agile Leadership"],
-            "brief_analysis": "The candidate has strong Python skills but lacks required Kubernetes experience."
-        }}
-
-        ### TARGET JOB
+        user_prompt = """### TARGET JOB
         Title: {job_title}
         Department: {job_department}
         Requirements: {job_requirements}
@@ -144,29 +143,49 @@ class MultiProviderResumeGraphBuilder:
         ### CANDIDATE RESUME CONTEXT
         {context}
 
-        ### YOUR JSON RESPONSE:
-        """
+        JSON Analysis:"""
 
-        prompt = PromptTemplate(
-            template=PROMPT_TEMPLATE,
-            input_variables=["job_title", "job_department", "job_requirements", "context", "feedback_instruction"],
-            partial_variables={"format_instructions": parser.get_format_instructions()}
-        )
-
-        chain = prompt | self.llm | parser
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("user", user_prompt)
+        ])
+        
+        # REMOVED the Pydantic parser from the chain
+        chain = prompt | self.json_llm 
         job_info = state.get("job_info", {})
-
+        
         try:
-            structured_result = chain.invoke({
+            raw_response = chain.invoke({
                 "job_title": job_info.get("job_title", "N/A"),
                 "job_department": job_info.get("department", "N/A"),
                 "job_requirements": job_info.get("requirements", ""),
                 "context": state["context"],
                 "feedback_instruction": feedback_instruction
             })
-            return {"analysis": structured_result.model_dump_json(), "revision_count": current_count + 1}
+            
+            # Get the raw text output
+            response_text = raw_response.content if hasattr(raw_response, 'content') else str(raw_response)
+            
+            # THE FIX: Bulletproof Regex JSON Extraction
+            # This hunts for anything between { and } even if the model chatted first
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            
+            if not json_match:
+                raise ValueError(f"Could not find JSON object in output: {response_text[:100]}...")
+                
+            clean_json = json_match.group(0)
+            parsed_data = json.loads(clean_json)
+            
+            # Ensure required keys exist just in case the model missed one
+            required_keys = ["match_classification", "missing_critical_skills", "missing_soft_skills", "brief_analysis"]
+            for key in required_keys:
+                if key not in parsed_data:
+                    parsed_data[key] = "Data Missing from LLM"
+
+            # Serialize back to JSON string for the graph state
+            return {"analysis": json.dumps(parsed_data), "revision_count": current_count + 1}
+            
         except Exception as e:
-            # Error Handling Constraint: Return default "No Match" object on failure
             print(f"⚠️ Analysis failed, falling back to default. Error: {e}")
             fallback = AnalysisResult(
                 match_classification="No Match",
@@ -175,20 +194,26 @@ class MultiProviderResumeGraphBuilder:
                 brief_analysis="System failed to generate valid structured JSON analysis."
             )
             return {"analysis": fallback.model_dump_json(), "revision_count": current_count + 1}
-
     def critique_node(self, state: AgenticState):
         print("🧐 Node: Auditing Output for Hallucinations...")
-        reflection_prompt = PromptTemplate.from_template(
+        
+        # CRITICAL FIX: If the analysis failed in the previous step, don't audit it.
+        # Just pass the failure forward to avoid an infinite hallucination loop.
+        if "Parsing Error" in state.get("analysis", ""):
+            print("   -> Verdict: Skipping audit due to previous parsing error.")
+            return {"feedback": "PASS"} # Let it exit the graph gracefully
+            
+        reflection_prompt = ChatPromptTemplate.from_template(
             "You are an auditing algorithm. Review the generated JSON analysis against the resume context. "
             "If the analysis claims a critical skill or soft skill is MISSING, but it ACTUALLY EXISTS in the context, output: 'FAIL: You claimed [Skill] is missing, but it is in the context.' "
             "If the analysis claims a skill is MATCHED, but it is NOT in the context, output: 'FAIL: You hallucinated [Skill].' "
             "If the analysis is accurate based strictly on the text, output exactly: 'PASS'."
             "\n\nContext:\n{context}\n\nAnalysis:\n{analysis}"
         )
-        chain = reflection_prompt | self.llm
+        
+        chain = reflection_prompt | self.text_llm 
         feedback_msg = chain.invoke({"context": state["context"], "analysis": state["analysis"]})
         
-        # Handle different response types based on the underlying chat model wrapper
         feedback_text = feedback_msg.content if hasattr(feedback_msg, 'content') else str(feedback_msg)
         print(f"   -> Verdict: {feedback_text.strip()}")
         return {"feedback": feedback_text.strip()}
@@ -214,14 +239,10 @@ class MultiProviderResumeGraphBuilder:
         
         return workflow.compile()
 
- 
 # ==========================================
 # 5. Main Execution
 # ==========================================
 if __name__ == "__main__":
-    # Example Config Overrides - You can map these to your config.json
-    # PROVIDER = "ollama"       # Options: 'openai', 'ollama', 'vllm'
-    # MODEL_NAME = "llama3"     # e.g., 'gpt-4o', 'llama3', 'mistral'
     # 1. READ PROVIDER AND ENGINE DIRECTLY FROM JSON CONFIG
     PROVIDER = getattr(Config, 'LLM_PROVIDER', 'ollama')
     ENGINE = getattr(Config, 'LLM_MODEL', 'gpt-oss:20b')

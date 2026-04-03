@@ -69,7 +69,11 @@ class BaseAgentState(TypedDict):
 class ResumeIngestor:
     def __init__(self):
         print(f"🔄 Initializing Embedding Model: {Config.EMBEDDING_MODEL}...")
-        self.embeddings = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
+        
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=Config.EMBEDDING_MODEL,
+            # model_kwargs={'device': 'hip'} # Uncomment if you have a GPU
+                                                )
         self.vector_store = None
 
     def get_vector_store(self, pdf_path: str, force_reload: bool = False):
@@ -101,3 +105,5 @@ class ResumeIngestor:
         )
         print("✅ Vector Store Ready!")
         return self.vector_store
+    
+    
