@@ -28,7 +28,10 @@ class Config:
         print(f"⚠️ Config file not found at {_config_path}, using defaults")
         _data = {}
 
-    LLM_MODEL = _data.get("LLM_MODEL", "gpt-oss:20b") 
+    # === ADD THE PROVIDER HERE ===
+    LLM_PROVIDER = _data.get("LLM_PROVIDER", "ollama")
+    LLM_MODEL = _data.get("LLM_MODEL", "gpt-oss:20b")
+ 
     EMBEDDING_MODEL = _data.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     VECTOR_DB_PATH = _data.get("VECTOR_DB_PATH", "./data/chroma_db")
     CHUNK_SIZE = _data.get("CHUNK_SIZE", 500)
