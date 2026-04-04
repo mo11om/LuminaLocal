@@ -4,8 +4,8 @@ import re
 import csv
 from typing import List, Literal, TypedDict, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from typing import List, Literal, TypedDict, Optional, Dict, Any
-from .utils import Config, ResumeIngestor, BaseAgentState
+
+from dotenv import load_dotenv
 
 # LangGraph & LangChain imports
 from langgraph.graph import StateGraph, END
@@ -18,6 +18,8 @@ from langchain_ollama import ChatOllama
 
 # Import your existing utilities
 from .utils import Config, ResumeIngestor
+
+load_dotenv()
 
 # ==========================================
 # 1. Pydantic Output Schema (Per Specification)
@@ -46,9 +48,11 @@ class AgenticState(TypedDict):
     feedback: str
     revision_count: int
     job_info: Dict[str, Any]
+    # --- CHANGED: Added token_usage dictionary to accumulate cloud tokens ---
+    token_usage: Dict[str, int]
 
 # ==========================================
-# 3. LLM Provider Factory (UPDATED: Added json_mode flag)
+# 3. LLM Provider Factory 
 # ==========================================
 class LLMFactory:
     @staticmethod
@@ -59,7 +63,9 @@ class LLMFactory:
         if provider == "openai":
             if not os.getenv("OPENAI_API_KEY"):
                 raise ValueError("OPENAI_API_KEY environment variable is required for OpenAI provider.")
+            
             model_kwargs = {"response_format": {"type": "json_object"}} if json_mode else {}
+            
             return ChatOpenAI(
                 model=model_name, 
                 temperature=temperature,
@@ -68,7 +74,6 @@ class LLMFactory:
             
         elif provider == "ollama":
             base_url = kwargs.get("base_url", "http://localhost:11434")
-            # Only apply format="json" if requested by the node
             return ChatOllama(
                 model=model_name, 
                 temperature=temperature, 
@@ -97,8 +102,7 @@ class MultiProviderResumeGraphBuilder:
     def __init__(self, vector_store, provider: str, model_name: str, **llm_kwargs):
         self.vector_store = vector_store
         
-        # Instantiate two separate models based on the required task output
-        self.json_llm = LLMFactory.get_llm(provider, model_name, json_mode=False, **llm_kwargs)
+        self.json_llm = LLMFactory.get_llm(provider, model_name, json_mode=True, **llm_kwargs)
         self.text_llm = LLMFactory.get_llm(provider, model_name, json_mode=False, **llm_kwargs)
         
         self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
@@ -111,13 +115,15 @@ class MultiProviderResumeGraphBuilder:
 
     def analyze_node(self, state: AgenticState):
         current_count = state.get("revision_count", 0)
+        # Fetch existing token usage or initialize
+        current_usage = state.get("token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        
         print(f"🤖 Node: Generating Analysis (Draft {current_count + 1})...")
         
         feedback_instruction = ""
         if state.get("feedback") and "FAIL" in state.get("feedback", ""):
             feedback_instruction = f"\n### CRITIQUE FROM PREVIOUS ATTEMPT:\n{state['feedback']}\nFix these hallucinations."
 
-        # FIXED SYSTEM PROMPT: Manually defining the schema so the local model understands it easily
         system_prompt = """You are a Principal Staff Engineer acting as a Technical Recruiter.
         Your goal is to perform a gap analysis and classify the candidate's fit.
 
@@ -152,7 +158,6 @@ class MultiProviderResumeGraphBuilder:
             ("user", user_prompt)
         ])
         
-        # REMOVED the Pydantic parser from the chain
         chain = prompt | self.json_llm 
         job_info = state.get("job_info", {})
         
@@ -165,11 +170,15 @@ class MultiProviderResumeGraphBuilder:
                 "feedback_instruction": feedback_instruction
             })
             
-            # Get the raw text output
+            # --- CHANGED: Accumulate Token Usage if provided by the cloud model ---
+            if hasattr(raw_response, 'response_metadata') and 'token_usage' in raw_response.response_metadata:
+                usage = raw_response.response_metadata['token_usage']
+                current_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                current_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                current_usage["total_tokens"] += usage.get("total_tokens", 0)
+            
             response_text = raw_response.content if hasattr(raw_response, 'content') else str(raw_response)
             
-            # THE FIX: Bulletproof Regex JSON Extraction
-            # This hunts for anything between { and } even if the model chatted first
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             
             if not json_match:
@@ -178,14 +187,16 @@ class MultiProviderResumeGraphBuilder:
             clean_json = json_match.group(0)
             parsed_data = json.loads(clean_json)
             
-            # Ensure required keys exist just in case the model missed one
             required_keys = ["match_classification", "missing_critical_skills", "missing_soft_skills", "brief_analysis"]
             for key in required_keys:
                 if key not in parsed_data:
                     parsed_data[key] = "Data Missing from LLM"
 
-            # Serialize back to JSON string for the graph state
-            return {"analysis": json.dumps(parsed_data), "revision_count": current_count + 1}
+            return {
+                "analysis": json.dumps(parsed_data), 
+                "revision_count": current_count + 1,
+                "token_usage": current_usage  # Pass updated tokens back to state
+            }
             
         except Exception as e:
             print(f"⚠️ Analysis failed, falling back to default. Error: {e}")
@@ -195,15 +206,19 @@ class MultiProviderResumeGraphBuilder:
                 missing_soft_skills=["Parsing Error"],
                 brief_analysis="System failed to generate valid structured JSON analysis."
             )
-            return {"analysis": fallback.model_dump_json(), "revision_count": current_count + 1}
+            return {
+                "analysis": fallback.model_dump_json(), 
+                "revision_count": current_count + 1,
+                "token_usage": current_usage
+            }
+
     def critique_node(self, state: AgenticState):
         print("🧐 Node: Auditing Output for Hallucinations...")
+        current_usage = state.get("token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         
-        # CRITICAL FIX: If the analysis failed in the previous step, don't audit it.
-        # Just pass the failure forward to avoid an infinite hallucination loop.
         if "Parsing Error" in state.get("analysis", ""):
             print("   -> Verdict: Skipping audit due to previous parsing error.")
-            return {"feedback": "PASS"} # Let it exit the graph gracefully
+            return {"feedback": "PASS"}
             
         reflection_prompt = ChatPromptTemplate.from_template(
             "You are an auditing algorithm. Review the generated JSON analysis against the resume context. "
@@ -216,9 +231,20 @@ class MultiProviderResumeGraphBuilder:
         chain = reflection_prompt | self.text_llm 
         feedback_msg = chain.invoke({"context": state["context"], "analysis": state["analysis"]})
         
+        # --- CHANGED: Accumulate Token Usage for the critique step ---
+        if hasattr(feedback_msg, 'response_metadata') and 'token_usage' in feedback_msg.response_metadata:
+            usage = feedback_msg.response_metadata['token_usage']
+            current_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+            current_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+            current_usage["total_tokens"] += usage.get("total_tokens", 0)
+        
         feedback_text = feedback_msg.content if hasattr(feedback_msg, 'content') else str(feedback_msg)
         print(f"   -> Verdict: {feedback_text.strip()}")
-        return {"feedback": feedback_text.strip()}
+        
+        return {
+            "feedback": feedback_text.strip(),
+            "token_usage": current_usage # Pass updated tokens back to state
+        }
 
     def route_to_revision(self, state: AgenticState) -> str:
         if state.get("revision_count", 0) >= 3:
@@ -245,9 +271,16 @@ class MultiProviderResumeGraphBuilder:
 # 5. Main Execution
 # ==========================================
 if __name__ == "__main__":
-    # 1. READ PROVIDER AND ENGINE DIRECTLY FROM JSON CONFIG
-    PROVIDER = getattr(Config, 'LLM_PROVIDER', 'ollama')
-    ENGINE = getattr(Config, 'LLM_MODEL', 'gpt-oss:20b')
+    
+    PROVIDER = getattr(Config, 'LLM_PROVIDER', 'ollama').lower()
+    
+    if PROVIDER == "openai":
+        ENGINE = getattr(Config, 'GPT_MODEL', 'gpt-4o')
+        if not os.getenv("OPENAI_API_KEY"):
+            print("❌ Configuration Error: 'LLM_PROVIDER' is set to 'openai' in config.json, but OPENAI_API_KEY is missing in your .env file.")
+            exit(1)
+    else:
+        ENGINE = getattr(Config, 'LLM_MODEL', 'gpt-oss:20b')
     
     if not os.path.exists(Config.RESUME_FILE):
         print(f"❌ Error: Resume file '{Config.RESUME_FILE}' not found.")
@@ -266,10 +299,9 @@ if __name__ == "__main__":
     with open(Config.JOBS_FILE, 'r', encoding='utf-8') as f:
         job_list = json.load(f)
 
-    # List to store results for CSV export
     results_summary = []
 
-    print(f"🚀 Starting Multi-Provider Pipeline ({PROVIDER} / {ENGINE}) for {len(job_list)} jobs...\n")
+    print(f"🚀 Starting Multi-Provider Pipeline ({PROVIDER.upper()} / {ENGINE}) for {len(job_list)} jobs...\n")
 
     for i, job in enumerate(job_list):
         jd_query = f"{job.get('job_title', '')} {job.get('requirements', '')}"
@@ -277,7 +309,8 @@ if __name__ == "__main__":
             "job_info": job,
             "job_description": jd_query,
             "context": "",
-            "revision_count": 0
+            "revision_count": 0,
+            "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0} # Initialize tokens
         }
 
         print(f"\n--- Processing Job {i+1}/{len(job_list)}: {job.get('job_title')} ---")
@@ -297,13 +330,18 @@ if __name__ == "__main__":
         print(f"[{i+1}/{len(job_list)}] Result: {classification.upper()}")
         print(f"Brief Analysis: {result_json.get('brief_analysis', '')}")
         
-        # Add result to our summary list
+        # --- CHANGED: Log token usage safely to the console if it exists ---
+        final_tokens = output.get("token_usage", {})
+        if final_tokens.get("total_tokens", 0) > 0:
+            print(f"☁️  API Tokens Used -> Prompt: {final_tokens.get('prompt_tokens')} | Completion: {final_tokens.get('completion_tokens')} | Total: {final_tokens.get('total_tokens')}")
+        
         results_summary.append({
             "job_title": job.get('job_title', 'Unknown'),
             "classification": classification,
             "missing_critical_skills": result_json.get('missing_critical_skills', []),
             "missing_soft_skills": result_json.get('missing_soft_skills', []),
-            "brief_analysis": result_json.get('brief_analysis', '')
+            "brief_analysis": result_json.get('brief_analysis', ''),
+            "total_tokens_used": final_tokens.get("total_tokens", 0) # Track in export
         })
 
     # ==========================================
@@ -312,7 +350,6 @@ if __name__ == "__main__":
     csv_filename = "multi_provider_" + getattr(Config, 'ANALYSIS_OUTPUT_CSV', 'analysis_results.csv')
     output_dir = getattr(Config, 'OUTPUT_DIR', './data/output')
     
-    # Ensure the output directory exists
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
@@ -327,13 +364,13 @@ if __name__ == "__main__":
                 'Classification', 
                 'Missing Critical Skills', 
                 'Missing Soft Skills',
-                'Brief Analysis'
+                'Brief Analysis',
+                'Total Tokens Used' # Added to CSV tracking
             ]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
 
             for res in results_summary:
-                # Helper to flatten lists safely 
                 def flatten_list(lst):
                     if not lst: return ""
                     return ", ".join(lst) if isinstance(lst, list) else str(lst)
@@ -343,7 +380,8 @@ if __name__ == "__main__":
                     'Classification': res['classification'],
                     'Missing Critical Skills': flatten_list(res['missing_critical_skills']),
                     'Missing Soft Skills': flatten_list(res['missing_soft_skills']),
-                    'Brief Analysis': res['brief_analysis']
+                    'Brief Analysis': res['brief_analysis'],
+                    'Total Tokens Used': res['total_tokens_used']
                 })
         print("✅ CSV export complete.")
         
