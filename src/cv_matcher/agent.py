@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_community.document_loaders import PyPDFLoader
 
 # Provider imports for the Factory
 from langchain_openai import ChatOpenAI
@@ -99,23 +100,131 @@ class LLMFactory:
 # 4. Agentic LangGraph Workflow
 # ==========================================
 class MultiProviderResumeGraphBuilder:
-    def __init__(self, vector_store, provider: str, model_name: str, **llm_kwargs):
+    # --- CHANGED: Accept either vector_store (for RAG) or full_resume_text (for No-RAG) ---
+    def __init__(self, provider: str, model_name: str, vector_store=None, full_resume_text: str = None, **llm_kwargs):
         self.vector_store = vector_store
+        self.full_resume_text = full_resume_text
         
         self.json_llm = LLMFactory.get_llm(provider, model_name, json_mode=True, **llm_kwargs)
         self.text_llm = LLMFactory.get_llm(provider, model_name, json_mode=False, **llm_kwargs)
         
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
+        # Only initialize retriever if a vector store is provided
+        if self.vector_store:
+            self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
+        else:
+            self.retriever = None
 
     def retrieve_node(self, state: AgenticState):
-        print("🔍 Node: Retrieving context...")
-        documents = self.retriever.invoke(state["job_description"])
-        context_str = "\n\n".join([doc.page_content for doc in documents])
-        return {"context": context_str}
+        # --- CHANGED: Conditional Retrieval Logic ---
+        if self.full_resume_text:
+            print("📄 Node: Loading FULL resume text (RAG bypassed)...")
+            return {"context": self.full_resume_text}
+        else:
+            print("🔍 Node: Retrieving context chunks (RAG enabled)...")
+            documents = self.retriever.invoke(state["job_description"])
+            context_str = "\n\n".join([doc.page_content for doc in documents])
+            return {"context": context_str}
+
+    # def analyze_node(self, state: AgenticState):
+    #     current_count = state.get("revision_count", 0)
+    #     current_usage = state.get("token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        
+    #     print(f"🤖 Node: Generating Analysis (Draft {current_count + 1})...")
+        
+    #     feedback_instruction = ""
+    #     if state.get("feedback") and "FAIL" in state.get("feedback", ""):
+    #         feedback_instruction = f"\n### CRITIQUE FROM PREVIOUS ATTEMPT:\n{state['feedback']}\nFix these hallucinations."
+
+    #     system_prompt = """You are a Principal Staff Engineer acting as a Technical Recruiter.
+    #     Your goal is to perform a gap analysis and classify the candidate's fit.
+
+    #     {feedback_instruction}
+
+    #     ### CLASSIFICATION RULES:
+    #     1. **Strong Match**: Candidate possesses 70%+ of the "Must-Have" technical skills.
+    #     2. **Good Match**: Candidate possesses 40-70% of "Must-Have" skills.
+    #     3. **No Match**: Candidate lacks core technologies (<40% match).
+
+    #     ### JSON OUTPUT INSTRUCTIONS:
+    #     You must output EXACTLY AND ONLY a valid JSON object. Do not include markdown formatting or conversational text.
+    #     Your JSON must contain EXACTLY these four keys:
+    #     - "match_classification": strictly "Strong Match", "Good Match", or "No Match"
+    #     - "missing_critical_skills": array of strings
+    #     - "missing_soft_skills": array of strings
+    #     - "brief_analysis": string, concise 2-sentence summary
+    #     """
+
+    #     user_prompt = """### TARGET JOB
+    #     Title: {job_title}
+    #     Department: {job_department}
+    #     Requirements: {job_requirements}
+
+    #     ### CANDIDATE RESUME CONTEXT
+    #     {context}
+
+    #     JSON Analysis:"""
+
+    #     prompt = ChatPromptTemplate.from_messages([
+    #         ("system", system_prompt),
+    #         ("user", user_prompt)
+    #     ])
+        
+    #     chain = prompt | self.json_llm 
+    #     job_info = state.get("job_info", {})
+        
+    #     try:
+    #         raw_response = chain.invoke({
+    #             "job_title": job_info.get("job_title", "N/A"),
+    #             "job_department": job_info.get("department", "N/A"),
+    #             "job_requirements": job_info.get("requirements", ""),
+    #             "context": state["context"],
+    #             "feedback_instruction": feedback_instruction
+    #         })
+            
+    #         if hasattr(raw_response, 'response_metadata') and 'token_usage' in raw_response.response_metadata:
+    #             usage = raw_response.response_metadata['token_usage']
+    #             current_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+    #             current_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+    #             current_usage["total_tokens"] += usage.get("total_tokens", 0)
+            
+    #         response_text = raw_response.content if hasattr(raw_response, 'content') else str(raw_response)
+            
+    #         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            
+    #         if not json_match:
+    #             raise ValueError(f"Could not find JSON object in output: {response_text[:100]}...")
+                
+    #         clean_json = json_match.group(0)
+    #         parsed_data = json.loads(clean_json)
+            
+    #         required_keys = ["match_classification", "missing_critical_skills", "missing_soft_skills", "brief_analysis"]
+    #         for key in required_keys:
+    #             if key not in parsed_data:
+    #                 parsed_data[key] = "Data Missing from LLM"
+
+    #         return {
+    #             "analysis": json.dumps(parsed_data), 
+    #             "revision_count": current_count + 1,
+    #             "token_usage": current_usage  # Pass updated tokens back to state
+    #         }
+            
+    #     except Exception as e:
+    #         print(f"⚠️ Analysis failed, falling back to default. Error: {e}")
+    #         fallback = AnalysisResult(
+    #             match_classification="No Match",
+    #             missing_critical_skills=["Parsing Error"],
+    #             missing_soft_skills=["Parsing Error"],
+    #             brief_analysis="System failed to generate valid structured JSON analysis."
+    #         )
+    #         return {
+    #             "analysis": fallback.model_dump_json(), 
+    #             "revision_count": current_count + 1,
+    #             "token_usage": current_usage
+    #         }
+
 
     def analyze_node(self, state: AgenticState):
         current_count = state.get("revision_count", 0)
-        # Fetch existing token usage or initialize
         current_usage = state.get("token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         
         print(f"🤖 Node: Generating Analysis (Draft {current_count + 1})...")
@@ -124,10 +233,16 @@ class MultiProviderResumeGraphBuilder:
         if state.get("feedback") and "FAIL" in state.get("feedback", ""):
             feedback_instruction = f"\n### CRITIQUE FROM PREVIOUS ATTEMPT:\n{state['feedback']}\nFix these hallucinations."
 
+        # =================================================================
+        # CACHE-OPTIMIZED PROMPT STRUCTURE
+        # 1. Put the massive, static Resume Context at the very top.
+        # 2. Put the static rules and instructions immediately after.
+        # =================================================================
         system_prompt = """You are a Principal Staff Engineer acting as a Technical Recruiter.
-        Your goal is to perform a gap analysis and classify the candidate's fit.
+        Your goal is to perform a gap analysis and classify the candidate's fit based strictly on the provided resume context.
 
-        {feedback_instruction}
+        ### CANDIDATE RESUME CONTEXT (STATIC)
+        {context}
 
         ### CLASSIFICATION RULES:
         1. **Strong Match**: Candidate possesses 70%+ of the "Must-Have" technical skills.
@@ -143,13 +258,15 @@ class MultiProviderResumeGraphBuilder:
         - "brief_analysis": string, concise 2-sentence summary
         """
 
-        user_prompt = """### TARGET JOB
+        # =================================================================
+        # 3. Put the dynamic variables (Job Info & Feedback) at the very end.
+        # =================================================================
+        user_prompt = """{feedback_instruction}
+
+        ### TARGET JOB (DYNAMIC)
         Title: {job_title}
         Department: {job_department}
         Requirements: {job_requirements}
-
-        ### CANDIDATE RESUME CONTEXT
-        {context}
 
         JSON Analysis:"""
 
@@ -170,7 +287,6 @@ class MultiProviderResumeGraphBuilder:
                 "feedback_instruction": feedback_instruction
             })
             
-            # --- CHANGED: Accumulate Token Usage if provided by the cloud model ---
             if hasattr(raw_response, 'response_metadata') and 'token_usage' in raw_response.response_metadata:
                 usage = raw_response.response_metadata['token_usage']
                 current_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -195,7 +311,7 @@ class MultiProviderResumeGraphBuilder:
             return {
                 "analysis": json.dumps(parsed_data), 
                 "revision_count": current_count + 1,
-                "token_usage": current_usage  # Pass updated tokens back to state
+                "token_usage": current_usage
             }
             
         except Exception as e:
@@ -211,7 +327,6 @@ class MultiProviderResumeGraphBuilder:
                 "revision_count": current_count + 1,
                 "token_usage": current_usage
             }
-
     def critique_node(self, state: AgenticState):
         print("🧐 Node: Auditing Output for Hallucinations...")
         current_usage = state.get("token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
@@ -274,26 +389,39 @@ if __name__ == "__main__":
     
     PROVIDER = getattr(Config, 'LLM_PROVIDER', 'ollama').lower()
     
+    if not os.path.exists(Config.RESUME_FILE):
+        print(f"❌ Error: Resume file '{Config.RESUME_FILE}' not found.")
+        exit(1)
+
+    # --- CHANGED: Dynamic App Initialization (RAG vs No-RAG) ---
     if PROVIDER == "openai":
         ENGINE = getattr(Config, 'GPT_MODEL', 'gpt-4o')
         if not os.getenv("OPENAI_API_KEY"):
             print("❌ Configuration Error: 'LLM_PROVIDER' is set to 'openai' in config.json, but OPENAI_API_KEY is missing in your .env file.")
             exit(1)
+            
+        print("☁️ Cloud Provider detected: Disabling RAG and loading full resume text...")
+        loader = PyPDFLoader(Config.RESUME_FILE)
+        docs = loader.load()
+        full_text = "\n\n".join([doc.page_content for doc in docs])
+        
+        app = MultiProviderResumeGraphBuilder(
+            provider=PROVIDER, 
+            model_name=ENGINE,
+            full_resume_text=full_text  # Pass raw text, no vector store
+        ).build()
+        
     else:
         ENGINE = getattr(Config, 'LLM_MODEL', 'gpt-oss:20b')
-    
-    if not os.path.exists(Config.RESUME_FILE):
-        print(f"❌ Error: Resume file '{Config.RESUME_FILE}' not found.")
-        exit(1)
-
-    ingestor = ResumeIngestor()
-    vector_store = ingestor.get_vector_store(Config.RESUME_FILE)
-    
-    app = MultiProviderResumeGraphBuilder(
-        vector_store=vector_store, 
-        provider=PROVIDER, 
-        model_name=ENGINE
-    ).build()
+        print("💻 Local Provider detected: Enabling RAG (Vector Search)...")
+        ingestor = ResumeIngestor()
+        vector_store = ingestor.get_vector_store(Config.RESUME_FILE)
+        
+        app = MultiProviderResumeGraphBuilder(
+            provider=PROVIDER, 
+            model_name=ENGINE,
+            vector_store=vector_store  # Pass vector store
+        ).build()
 
     print(f"\n📂 Loading Job Descriptions from {Config.JOBS_FILE}...")
     with open(Config.JOBS_FILE, 'r', encoding='utf-8') as f:
@@ -310,7 +438,7 @@ if __name__ == "__main__":
             "job_description": jd_query,
             "context": "",
             "revision_count": 0,
-            "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0} # Initialize tokens
+            "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0} 
         }
 
         print(f"\n--- Processing Job {i+1}/{len(job_list)}: {job.get('job_title')} ---")
