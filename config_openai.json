@@ -1,0 +1,12 @@
+{
+    "LLM_PROVIDER": "openai",
+    
+    "JOBS_FILE": "./data/jobs/test.json",
+    "RESUME_FILE": "./data/raw/CV.md.pdf",
+    "OUTPUT_DIR": "./data/output",
+    "ANALYSIS_OUTPUT_CSV": "cloud_analysis_results.csv",
+    "GPT_MODEL": "gpt-5-nano",
+    "GPT_TEMPERATURE": 0.3,
+    "GPT_MAX_TOKENS": 500,
+    "ENABLE_GPT_BASELINE": true
+}
