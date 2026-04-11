@@ -395,7 +395,7 @@ if __name__ == "__main__":
 
     # --- CHANGED: Dynamic App Initialization (RAG vs No-RAG) ---
     if PROVIDER == "openai":
-        ENGINE = getattr(Config, 'GPT_MODEL', 'gpt-4o')
+        ENGINE = getattr(Config, 'GPT_MODEL', 'gpt-5-nano')
         if not os.getenv("OPENAI_API_KEY"):
             print("❌ Configuration Error: 'LLM_PROVIDER' is set to 'openai' in config.json, but OPENAI_API_KEY is missing in your .env file.")
             exit(1)
@@ -426,8 +426,10 @@ if __name__ == "__main__":
     print(f"\n📂 Loading Job Descriptions from {Config.JOBS_FILE}...")
     with open(Config.JOBS_FILE, 'r', encoding='utf-8') as f:
         job_list = json.load(f)
+    # ... (previous code remains the same)
 
     results_summary = []
+    token_report = []  # New list to store detailed token data
 
     print(f"🚀 Starting Multi-Provider Pipeline ({PROVIDER.upper()} / {ENGINE}) for {len(job_list)} jobs...\n")
 
@@ -455,26 +457,53 @@ if __name__ == "__main__":
             }
         
         classification = result_json.get('match_classification', 'No Match')
-        print(f"[{i+1}/{len(job_list)}] Result: {classification.upper()}")
-        print(f"Brief Analysis: {result_json.get('brief_analysis', '')}")
-        
-        # --- CHANGED: Log token usage safely to the console if it exists ---
         final_tokens = output.get("token_usage", {})
-        if final_tokens.get("total_tokens", 0) > 0:
-            print(f"☁️  API Tokens Used -> Prompt: {final_tokens.get('prompt_tokens')} | Completion: {final_tokens.get('completion_tokens')} | Total: {final_tokens.get('total_tokens')}")
-        
+
+        # Store detailed token info for the new report
+        token_report.append({
+            "Job Title": job.get('job_title', 'Unknown'),
+            "Prompt Tokens": final_tokens.get("prompt_tokens", 0),
+            "Completion Tokens": final_tokens.get("completion_tokens", 0),
+            "Total Tokens": final_tokens.get("total_tokens", 0)
+        })
+
         results_summary.append({
             "job_title": job.get('job_title', 'Unknown'),
             "classification": classification,
             "missing_critical_skills": result_json.get('missing_critical_skills', []),
             "missing_soft_skills": result_json.get('missing_soft_skills', []),
             "brief_analysis": result_json.get('brief_analysis', ''),
-            "total_tokens_used": final_tokens.get("total_tokens", 0) # Track in export
+            "total_tokens_used": final_tokens.get("total_tokens", 0) 
         })
 
     # ==========================================
     # CSV EXPORT LOGIC
     # ==========================================
+    output_dir = getattr(Config, 'OUTPUT_DIR', './data/output')
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # 1. Save Analysis Results
+    csv_filename = "multi_provider_" + getattr(Config, 'ANALYSIS_OUTPUT_CSV', 'analysis_results.csv')
+    csv_path = os.path.join(output_dir, csv_filename)
+    # ... (existing analysis CSV logic remains here)
+
+    # 2. NEW: Save Token Usage Report
+    if PROVIDER in ["openai"]:
+        token_csv_path = os.path.join(output_dir, "token_usage_report.csv")
+        print(f"💾 Saving token usage report to: {token_csv_path}")
+        
+        try:
+            with open(token_csv_path, mode='w', newline='', encoding='utf-8') as csv_file:
+                fieldnames = ['Job Title', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens']
+                writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(token_report)
+            print("✅ Token report export complete.")
+        except Exception as e:
+            print(f"❌ Error writing Token CSV: {e}")
+
+
     csv_filename = "multi_provider_" + getattr(Config, 'ANALYSIS_OUTPUT_CSV', 'analysis_results.csv')
     output_dir = getattr(Config, 'OUTPUT_DIR', './data/output')
     
@@ -517,3 +546,93 @@ if __name__ == "__main__":
         print(f"❌ Error writing CSV: {e}")
 
     print("\n✅ Done.")
+    # results_summary = []
+
+    # print(f"🚀 Starting Multi-Provider Pipeline ({PROVIDER.upper()} / {ENGINE}) for {len(job_list)} jobs...\n")
+
+    # for i, job in enumerate(job_list):
+    #     jd_query = f"{job.get('job_title', '')} {job.get('requirements', '')}"
+    #     inputs = {
+    #         "job_info": job,
+    #         "job_description": jd_query,
+    #         "context": "",
+    #         "revision_count": 0,
+    #         "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0} 
+    #     }
+
+    #     print(f"\n--- Processing Job {i+1}/{len(job_list)}: {job.get('job_title')} ---")
+    #     output = app.invoke(inputs)
+        
+    #     try:
+    #         result_json = json.loads(output["analysis"])
+    #     except Exception as e:
+    #         result_json = {
+    #             "match_classification": "No Match",
+    #             "missing_critical_skills": ["Parsing Error"],
+    #             "missing_soft_skills": ["Parsing Error"],
+    #             "brief_analysis": f"Error loading JSON: {str(e)}"
+    #         }
+        
+    #     classification = result_json.get('match_classification', 'No Match')
+    #     print(f"[{i+1}/{len(job_list)}] Result: {classification.upper()}")
+    #     print(f"Brief Analysis: {result_json.get('brief_analysis', '')}")
+        
+    #     # --- CHANGED: Log token usage safely to the console if it exists ---
+    #     final_tokens = output.get("token_usage", {})
+    #     if final_tokens.get("total_tokens", 0) > 0:
+    #         print(f"☁️  API Tokens Used -> Prompt: {final_tokens.get('prompt_tokens')} | Completion: {final_tokens.get('completion_tokens')} | Total: {final_tokens.get('total_tokens')}")
+        
+    #     results_summary.append({
+    #         "job_title": job.get('job_title', 'Unknown'),
+    #         "classification": classification,
+    #         "missing_critical_skills": result_json.get('missing_critical_skills', []),
+    #         "missing_soft_skills": result_json.get('missing_soft_skills', []),
+    #         "brief_analysis": result_json.get('brief_analysis', ''),
+    #         "total_tokens_used": final_tokens.get("total_tokens", 0) # Track in export
+    #     })
+
+    # # ==========================================
+    # # CSV EXPORT LOGIC
+    # # ==========================================
+    # csv_filename = "multi_provider_" + getattr(Config, 'ANALYSIS_OUTPUT_CSV', 'analysis_results.csv')
+    # output_dir = getattr(Config, 'OUTPUT_DIR', './data/output')
+    
+    # if not os.path.exists(output_dir):
+    #     os.makedirs(output_dir)
+        
+    # csv_path = os.path.join(output_dir, csv_filename)
+
+    # print(f"\n💾 Saving all {len(results_summary)} results to CSV: {csv_path}")
+    
+    # try:
+    #     with open(csv_path, mode='w', newline='', encoding='utf-8') as csv_file:
+    #         fieldnames = [
+    #             'Job Title', 
+    #             'Classification', 
+    #             'Missing Critical Skills', 
+    #             'Missing Soft Skills',
+    #             'Brief Analysis',
+    #             'Total Tokens Used' # Added to CSV tracking
+    #         ]
+    #         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    #         writer.writeheader()
+
+    #         for res in results_summary:
+    #             def flatten_list(lst):
+    #                 if not lst: return ""
+    #                 return ", ".join(lst) if isinstance(lst, list) else str(lst)
+
+    #             writer.writerow({
+    #                 'Job Title': res['job_title'],
+    #                 'Classification': res['classification'],
+    #                 'Missing Critical Skills': flatten_list(res['missing_critical_skills']),
+    #                 'Missing Soft Skills': flatten_list(res['missing_soft_skills']),
+    #                 'Brief Analysis': res['brief_analysis'],
+    #                 'Total Tokens Used': res['total_tokens_used']
+    #             })
+    #     print("✅ CSV export complete.")
+        
+    # except Exception as e:
+    #     print(f"❌ Error writing CSV: {e}")
+
+    # print("\n✅ Done.")
