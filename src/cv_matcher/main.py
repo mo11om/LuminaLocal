@@ -1,16 +1,17 @@
 import os
 import json
+import re
 import csv
 from typing import List, Literal
-from .utils import Config, ResumeIngestor, BaseAgentState
+from .utils import Config, ResumeIngestor, BaseAgentState, build_hybrid_retriever
 from .gpt_baseline import get_gpt_baseline
 
 # ==========================================
 # UPDATED IMPORT: LangChain Ollama
 # ==========================================
-from langchain_ollama import OllamaLLM 
+from langchain_ollama import OllamaLLM, ChatOllama
 
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
@@ -69,22 +70,92 @@ class AnalysisResult(BaseModel):
     missing_bonus_skills: List[str] = Field(
         description="List of nice-to-have skills or 'bonus' qualifications missing from the resume."
     )
-    # brief_analysis: str = Field(
-    #     description="A concise, 1-2 sentence summary of why this classification was assigned."
-    # )
+    citations: List[str] = Field(
+        description="List of specific document chunks (e.g., '[Doc 1]', '[Doc 3]') that support this analysis."
+    )
 # ==========================================
 # LangGraph Workflow
 # ==========================================
 class ResumeGraphBuilder:
-    def __init__(self, vector_store):
+    def __init__(self, vector_store, document_chunks=None):
         self.vector_store = vector_store
         self.llm = OllamaLLM(model=Config.LLM_MODEL)
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
+        # NEW (Step 1): Chat LLM for structured decomposition
+        self.chat_llm = ChatOllama(model=Config.LLM_MODEL, temperature=0.1)
+        
+        # --- CHANGED (Steps 2 & 3): Build hybrid retriever if chunks available ---
+        if document_chunks:
+            self.retriever = build_hybrid_retriever(
+                vector_store, document_chunks,
+                retriever_k=Config.RETRIEVER_K
+            )
+        else:
+            self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
+
+    # ==========================================
+    # NEW NODE (Step 1): Query Decomposition
+    # ==========================================
+    def decompose_node(self, state: BaseAgentState):
+        print("\U0001f9e9 Node: Decomposing job description into optimized sub-queries...")
+
+        decompose_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a search query optimizer for resume matching. Given a job description, decompose it into 2-3 focused search sub-queries that will retrieve the most relevant sections from a candidate's resume.
+
+Focus on different aspects:
+1. Core technical skills and programming languages/frameworks
+2. Soft skills, leadership qualities, and communication abilities
+3. Domain experience and industry-specific knowledge
+
+Output ONLY a valid JSON array of strings. Each string should be a concise, keyword-rich search query.
+Example: ["Python Django REST API backend microservices", "team leadership agile communication", "fintech payments domain experience"]"""),
+            ("user", "Job Description:\n{job_description}\n\nJSON array:")
+        ])
+
+        chain = decompose_prompt | self.chat_llm
+
+        try:
+            response = chain.invoke({"job_description": state["job_description"]})
+            response_text = response.content if hasattr(response, 'content') else str(response)
+
+            # Parse JSON array from response
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                queries = json.loads(json_match.group(0))
+                if isinstance(queries, list) and len(queries) > 0:
+                    print(f"   \u2192 Decomposed into {len(queries)} sub-queries: {queries}")
+                    return {"optimized_queries": queries}
+
+            # Fallback
+            print("   \u26a0\ufe0f Failed to parse sub-queries, using original JD as query.")
+            return {"optimized_queries": [state["job_description"]]}
+
+        except Exception as e:
+            print(f"   \u26a0\ufe0f Decompose failed: {e}. Using original JD as query.")
+            return {"optimized_queries": [state["job_description"]]}
 
     def retrieve_node(self, state: BaseAgentState):
-        question = state["job_description"]
-        documents = self.retriever.invoke(question)
-        context_str = "\n\n".join([doc.page_content for doc in documents])
+        # --- CHANGED (Steps 2 & 3): Use optimized queries + hybrid retriever ---
+        print("\ud83d\udd0d Node: Retrieving context via Hybrid Search + Re-ranking...")
+        queries = state.get("optimized_queries", [state["job_description"]])
+
+        all_docs = []
+        seen_content = set()
+
+        for query in queries:
+            documents = self.retriever.invoke(query)
+            for doc in documents:
+                content_hash = hash(doc.page_content)
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    all_docs.append(doc)
+
+        # Format with index labels for citation (Step 4)
+        labeled_chunks = []
+        for idx, doc in enumerate(all_docs, 1):
+            labeled_chunks.append(f"[Doc {idx}] {doc.page_content}")
+
+        context_str = "\n\n".join(labeled_chunks)
+        print(f"   \u2192 Retrieved {len(all_docs)} unique chunks across {len(queries)} sub-queries.")
         return {"context": context_str}
 
     def analyze_node(self, state: BaseAgentState):
@@ -133,7 +204,12 @@ class ResumeGraphBuilder:
         2. **Good Match**: Candidate possesses 60-80% of "Must-Have" skills or has strong transferrable skills.
         3. **No Match**: Candidate lacks significant core technologies required (e.g., <60% match) or has a completely irrelevant background.
 
-        Analyze objectively. Extract the matching skills, matched critical skills, missing critical skills, matched bonus skills, and missing bonus skills. Do not hallucinate skills not present in the RESUME CONTEXT.
+        ### CITATION RULES:
+        - You must ground your analysis strictly in the provided resume context.
+        - You must include citations referencing the specific chunks (e.g., [Doc 1], [Doc 3]) where you found the evidence for your claims.
+        - Do NOT claim a skill exists unless you can cite the specific [Doc N] where it appears.
+
+        Analyze objectively. Extract the matching skills, matched critical skills, missing critical skills, matched bonus skills, missing bonus skills, and citations. Do not hallucinate skills not present in the RESUME CONTEXT.
         <|eot_id|>
 
         <|start_header_id|>user<|end_header_id|>
@@ -147,7 +223,7 @@ class ResumeGraphBuilder:
         {context}
 
         ### INSTRUCTIONS
-        Perform the Gap Analysis and output the JSON result.
+        Perform the Gap Analysis and output the JSON result. Include citations for every skill claim.
         <|eot_id|>
         <|start_header_id|>assistant<|end_header_id|>
         """
@@ -176,9 +252,12 @@ class ResumeGraphBuilder:
 
     def build(self):
         workflow = StateGraph(BaseAgentState)
+        # --- CHANGED (Step 5): Updated graph wiring ---
+        workflow.add_node("decompose", self.decompose_node)
         workflow.add_node("retrieve", self.retrieve_node)
         workflow.add_node("analyze", self.analyze_node)
-        workflow.set_entry_point("retrieve")
+        workflow.set_entry_point("decompose")
+        workflow.add_edge("decompose", "retrieve")
         workflow.add_edge("retrieve", "analyze")
         workflow.add_edge("analyze", END)
         return workflow.compile()
@@ -199,7 +278,7 @@ if __name__ == "__main__":
     ingestor = ResumeIngestor()
     vector_store = ingestor.get_vector_store(Config.RESUME_FILE)
     
-    graph_builder = ResumeGraphBuilder(vector_store)
+    graph_builder = ResumeGraphBuilder(vector_store, document_chunks=ingestor.get_chunks())
     app = graph_builder.build()
 
     print(f"\n📂 Loading Job Descriptions from {Config.JOBS_FILE}...")
@@ -217,6 +296,7 @@ if __name__ == "__main__":
             "job_info": job,
             "job_description": jd_query, 
             "context": "",
+            "optimized_queries": [],  # NEW (Step 1)
             # "analysis": ""
         }
 

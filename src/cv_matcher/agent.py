@@ -17,8 +17,8 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 
-# Import your existing utilities
-from .utils import Config, ResumeIngestor
+# Import your existing utilities (includes hybrid retriever factory)
+from .utils import Config, ResumeIngestor, build_hybrid_retriever
 
 load_dotenv()
 
@@ -38,6 +38,9 @@ class AnalysisResult(BaseModel):
     brief_analysis: str = Field(
         description="A concise, 2-sentence summary of the candidate's suitability."
     )
+    citations: List[str] = Field(
+        description="List of specific document chunks (e.g., '[Doc 1]', '[Doc 3]') that support this analysis."
+    )
 
 # ==========================================
 # 2. Graph State
@@ -51,6 +54,8 @@ class AgenticState(TypedDict):
     job_info: Dict[str, Any]
     # --- CHANGED: Added token_usage dictionary to accumulate cloud tokens ---
     token_usage: Dict[str, int]
+    # --- NEW (Step 1): Decomposed sub-queries for hybrid retrieval ---
+    optimized_queries: List[str]
 
 # ==========================================
 # 3. LLM Provider Factory 
@@ -100,29 +105,102 @@ class LLMFactory:
 # 4. Agentic LangGraph Workflow
 # ==========================================
 class MultiProviderResumeGraphBuilder:
-    # --- CHANGED: Accept either vector_store (for RAG) or full_resume_text (for No-RAG) ---
-    def __init__(self, provider: str, model_name: str, vector_store=None, full_resume_text: str = None, **llm_kwargs):
+    # --- CHANGED: Accept vector_store, full_resume_text, and document_chunks ---
+    def __init__(self, provider: str, model_name: str, vector_store=None, full_resume_text: str = None, document_chunks=None, **llm_kwargs):
         self.vector_store = vector_store
         self.full_resume_text = full_resume_text
         
         self.json_llm = LLMFactory.get_llm(provider, model_name, json_mode=True, **llm_kwargs)
         self.text_llm = LLMFactory.get_llm(provider, model_name, json_mode=False, **llm_kwargs)
         
-        # Only initialize retriever if a vector store is provided
-        if self.vector_store:
+        # --- CHANGED (Steps 2 & 3): Build hybrid retriever if chunks available ---
+        if self.vector_store and document_chunks:
+            self.retriever = build_hybrid_retriever(
+                self.vector_store, document_chunks,
+                retriever_k=Config.RETRIEVER_K
+            )
+        elif self.vector_store:
             self.retriever = self.vector_store.as_retriever(search_kwargs={"k": Config.RETRIEVER_K})
         else:
             self.retriever = None
 
+    # ==========================================
+    # NEW NODE (Step 1): Query Decomposition
+    # ==========================================
+    def decompose_node(self, state: AgenticState):
+        print("🧩 Node: Decomposing job description into optimized sub-queries...")
+        current_usage = state.get("token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+
+        decompose_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a search query optimizer for resume matching. Given a job description, decompose it into 2-3 focused search sub-queries that will retrieve the most relevant sections from a candidate's resume.
+
+Focus on different aspects:
+1. Core technical skills and programming languages/frameworks
+2. Soft skills, leadership qualities, and communication abilities
+3. Domain experience and industry-specific knowledge
+
+Output ONLY a valid JSON array of strings. Each string should be a concise, keyword-rich search query.
+Example: ["Python Django REST API backend microservices", "team leadership agile communication", "fintech payments domain experience"]"""),
+            ("user", "Job Description:\n{job_description}\n\nJSON array:")
+        ])
+
+        chain = decompose_prompt | self.text_llm
+
+        try:
+            response = chain.invoke({"job_description": state["job_description"]})
+
+            # Track token usage
+            if hasattr(response, 'response_metadata') and 'token_usage' in response.response_metadata:
+                usage = response.response_metadata['token_usage']
+                current_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                current_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                current_usage["total_tokens"] += usage.get("total_tokens", 0)
+
+            response_text = response.content if hasattr(response, 'content') else str(response)
+
+            # Parse JSON array from response
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                queries = json.loads(json_match.group(0))
+                if isinstance(queries, list) and len(queries) > 0:
+                    print(f"   → Decomposed into {len(queries)} sub-queries: {queries}")
+                    return {"optimized_queries": queries, "token_usage": current_usage}
+
+            # Fallback
+            print("   ⚠️ Failed to parse sub-queries, using original JD as query.")
+            return {"optimized_queries": [state["job_description"]], "token_usage": current_usage}
+
+        except Exception as e:
+            print(f"   ⚠️ Decompose failed: {e}. Using original JD as query.")
+            return {"optimized_queries": [state["job_description"]], "token_usage": current_usage}
+
     def retrieve_node(self, state: AgenticState):
-        # --- CHANGED: Conditional Retrieval Logic ---
+        # --- CHANGED: Conditional Retrieval with Hybrid Search & Doc Labels ---
         if self.full_resume_text:
             print("📄 Node: Loading FULL resume text (RAG bypassed)...")
-            return {"context": self.full_resume_text}
+            return {"context": f"[Doc 1] {self.full_resume_text}"}
         else:
-            print("🔍 Node: Retrieving context chunks (RAG enabled)...")
-            documents = self.retriever.invoke(state["job_description"])
-            context_str = "\n\n".join([doc.page_content for doc in documents])
+            print("🔍 Node: Retrieving context via Hybrid Search + Re-ranking...")
+            queries = state.get("optimized_queries", [state["job_description"]])
+
+            all_docs = []
+            seen_content = set()
+
+            for query in queries:
+                documents = self.retriever.invoke(query)
+                for doc in documents:
+                    content_hash = hash(doc.page_content)
+                    if content_hash not in seen_content:
+                        seen_content.add(content_hash)
+                        all_docs.append(doc)
+
+            # Format with index labels for citation (Step 4)
+            labeled_chunks = []
+            for idx, doc in enumerate(all_docs, 1):
+                labeled_chunks.append(f"[Doc {idx}] {doc.page_content}")
+
+            context_str = "\n\n".join(labeled_chunks)
+            print(f"   → Retrieved {len(all_docs)} unique chunks across {len(queries)} sub-queries.")
             return {"context": context_str}
 
     # def analyze_node(self, state: AgenticState):
@@ -249,13 +327,19 @@ class MultiProviderResumeGraphBuilder:
         2. **Good Match**: Candidate possesses 40-70% of "Must-Have" skills.
         3. **No Match**: Candidate lacks core technologies (<40% match).
 
+        ### CITATION RULES:
+        - You must ground your analysis strictly in the provided resume context above.
+        - You must include citations referencing the specific chunks (e.g., [Doc 1], [Doc 3]) where you found the evidence for your claims.
+        - Do NOT claim a skill exists unless you can cite the specific [Doc N] where it appears.
+
         ### JSON OUTPUT INSTRUCTIONS:
         You must output EXACTLY AND ONLY a valid JSON object. Do not include markdown formatting or conversational text.
-        Your JSON must contain EXACTLY these four keys:
+        Your JSON must contain EXACTLY these five keys:
         - "match_classification": strictly "Strong Match", "Good Match", or "No Match"
         - "missing_critical_skills": array of strings
         - "missing_soft_skills": array of strings
         - "brief_analysis": string, concise 2-sentence summary
+        - "citations": array of strings (e.g., ["[Doc 1]", "[Doc 3]", "[Doc 5]"])
         """
 
         # =================================================================
@@ -303,10 +387,10 @@ class MultiProviderResumeGraphBuilder:
             clean_json = json_match.group(0)
             parsed_data = json.loads(clean_json)
             
-            required_keys = ["match_classification", "missing_critical_skills", "missing_soft_skills", "brief_analysis"]
+            required_keys = ["match_classification", "missing_critical_skills", "missing_soft_skills", "brief_analysis", "citations"]
             for key in required_keys:
                 if key not in parsed_data:
-                    parsed_data[key] = "Data Missing from LLM"
+                    parsed_data[key] = [] if key == "citations" else "Data Missing from LLM"
 
             return {
                 "analysis": json.dumps(parsed_data), 
@@ -320,7 +404,8 @@ class MultiProviderResumeGraphBuilder:
                 match_classification="No Match",
                 missing_critical_skills=["Parsing Error"],
                 missing_soft_skills=["Parsing Error"],
-                brief_analysis="System failed to generate valid structured JSON analysis."
+                brief_analysis="System failed to generate valid structured JSON analysis.",
+                citations=[]
             )
             return {
                 "analysis": fallback.model_dump_json(), 
@@ -371,11 +456,14 @@ class MultiProviderResumeGraphBuilder:
 
     def build(self):
         workflow = StateGraph(AgenticState)
+        # --- CHANGED (Step 5): Updated graph wiring ---
+        workflow.add_node("decompose", self.decompose_node)
         workflow.add_node("retrieve", self.retrieve_node)
         workflow.add_node("analyze", self.analyze_node)
         workflow.add_node("critique", self.critique_node)
         
-        workflow.set_entry_point("retrieve")
+        workflow.set_entry_point("decompose")
+        workflow.add_edge("decompose", "retrieve")
         workflow.add_edge("retrieve", "analyze")
         workflow.add_edge("analyze", "critique")
         workflow.add_conditional_edges("critique", self.route_to_revision, {"analyze": "analyze", END: END})
@@ -413,14 +501,15 @@ if __name__ == "__main__":
         
     else:
         ENGINE = getattr(Config, 'LLM_MODEL', 'gpt-oss:20b')
-        print("💻 Local Provider detected: Enabling RAG (Vector Search)...")
+        print("💻 Local Provider detected: Enabling RAG (Hybrid Search + Re-ranking)...")
         ingestor = ResumeIngestor()
         vector_store = ingestor.get_vector_store(Config.RESUME_FILE)
         
         app = MultiProviderResumeGraphBuilder(
             provider=PROVIDER, 
             model_name=ENGINE,
-            vector_store=vector_store  # Pass vector store
+            vector_store=vector_store,
+            document_chunks=ingestor.get_chunks()  # NEW: Pass chunks for BM25
         ).build()
 
     print(f"\n📂 Loading Job Descriptions from {Config.JOBS_FILE}...")
@@ -440,7 +529,8 @@ if __name__ == "__main__":
             "job_description": jd_query,
             "context": "",
             "revision_count": 0,
-            "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0} 
+            "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "optimized_queries": []  # NEW (Step 1)
         }
 
         print(f"\n--- Processing Job {i+1}/{len(job_list)}: {job.get('job_title')} ---")
@@ -473,6 +563,7 @@ if __name__ == "__main__":
             "missing_critical_skills": result_json.get('missing_critical_skills', []),
             "missing_soft_skills": result_json.get('missing_soft_skills', []),
             "brief_analysis": result_json.get('brief_analysis', ''),
+            "citations": result_json.get('citations', []),  # NEW (Step 4)
             "total_tokens_used": final_tokens.get("total_tokens", 0) 
         })
 

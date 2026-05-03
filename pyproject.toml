@@ -8,6 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "langchain-core",
+    "langchain",
     "langchain-community",
     "langchain-ollama",
     "langchain-huggingface",
@@ -15,6 +16,7 @@ dependencies = [
     "chromadb",
     "pypdf",
     "sentence-transformers",
+    "rank-bm25",
     "pydantic",
     "typing-extensions",
 ]

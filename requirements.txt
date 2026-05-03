@@ -1,5 +1,6 @@
 # LangChain Core & Workflow
 langchain-core
+langchain
 langgraph
 pydantic
 
@@ -12,6 +13,9 @@ sentence-transformers
 pypdf
 langchain-community
 chromadb
+
+# Hybrid Search & Re-ranking
+rank-bm25
 
 # Utilities
 typing-extensions
