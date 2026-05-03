@@ -6,18 +6,18 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# LangChain / Community Imports
+# LangChain Core / Community Imports (NO legacy 'langchain' package)
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-
-# --- NEW: Hybrid Search & Re-ranking imports (Steps 2 & 3) ---
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+
+# Direct cross-encoder import (no langchain wrapper)
+from sentence_transformers import CrossEncoder
 
 # ==========================================
 # 1. Configuration (Shared)
@@ -126,13 +126,77 @@ class ResumeIngestor:
         return self.chunks
 
 # ==========================================
-# 4. Hybrid Retriever Factory (Steps 2 & 3)
+# 4. Hybrid Retriever (Steps 2 & 3)
+#    Uses only langchain-core + langchain-community + sentence-transformers.
+#    NO dependency on the legacy 'langchain' package.
 # ==========================================
-def build_hybrid_retriever(vector_store, chunks, retriever_k: int = None, rerank_top_n: int = None):
+class HybridRetriever(BaseRetriever):
+    """
+    Custom hybrid retriever pipeline:
+      Step 2: BM25 (lexical) + Vector (semantic) via Reciprocal Rank Fusion
+      Step 3: Cross-encoder re-ranking via sentence-transformers
+    """
+    vector_retriever: Any = None
+    bm25_retriever: Any = None
+    cross_encoder_model: Any = None
+    top_n: int = 8
+    vector_weight: float = 0.5
+    bm25_weight: float = 0.5
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        # --- Step 2: Ensemble via Reciprocal Rank Fusion ---
+        vector_docs = self.vector_retriever.invoke(query)
+        bm25_docs = self.bm25_retriever.invoke(query)
+        fused = self._reciprocal_rank_fusion(vector_docs, bm25_docs)
+
+        # --- Step 3: Cross-encoder re-ranking ---
+        if self.cross_encoder_model and fused:
+            pairs = [(query, doc.page_content) for doc in fused]
+            scores = self.cross_encoder_model.predict(pairs)
+            scored_docs = sorted(zip(fused, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in scored_docs[: self.top_n]]
+
+        return fused[: self.top_n]
+
+    def _reciprocal_rank_fusion(
+        self, vector_docs: List[Document], bm25_docs: List[Document], k: int = 60
+    ) -> List[Document]:
+        """Reciprocal Rank Fusion (RRF) of two ranked lists."""
+        doc_scores: Dict[int, float] = {}
+        doc_map: Dict[int, Document] = {}
+
+        for rank, doc in enumerate(vector_docs):
+            key = hash(doc.page_content)
+            doc_scores[key] = doc_scores.get(key, 0) + self.vector_weight * (
+                1 / (k + rank + 1)
+            )
+            doc_map[key] = doc
+
+        for rank, doc in enumerate(bm25_docs):
+            key = hash(doc.page_content)
+            doc_scores[key] = doc_scores.get(key, 0) + self.bm25_weight * (
+                1 / (k + rank + 1)
+            )
+            doc_map[key] = doc
+
+        sorted_keys = sorted(doc_scores, key=doc_scores.get, reverse=True)
+        return [doc_map[k] for k in sorted_keys]
+
+
+def build_hybrid_retriever(
+    vector_store, chunks, retriever_k: int = None, rerank_top_n: int = None
+):
     """
     Build a production hybrid retriever pipeline:
-      Step 2: BM25 (lexical) + Vector (semantic) → EnsembleRetriever
-      Step 3: Cross-encoder re-ranking → ContextualCompressionRetriever
+      Step 2: BM25 (lexical) + Vector (semantic) → RRF Ensemble
+      Step 3: Cross-encoder re-ranking → top_n selection
+
+    Uses only langchain-core, langchain-community, and sentence-transformers.
 
     Args:
         vector_store: Chroma vector store instance.
@@ -141,7 +205,7 @@ def build_hybrid_retriever(vector_store, chunks, retriever_k: int = None, rerank
         rerank_top_n: Number of docs the re-ranker keeps. Defaults to Config.RERANK_TOP_N.
 
     Returns:
-        ContextualCompressionRetriever wrapping the ensemble.
+        HybridRetriever instance (subclass of BaseRetriever).
     """
     k = retriever_k or Config.RETRIEVER_K
     top_n = rerank_top_n or Config.RERANK_TOP_N
@@ -152,28 +216,19 @@ def build_hybrid_retriever(vector_store, chunks, retriever_k: int = None, rerank
     # --- Step 2b: BM25 lexical retriever from the same chunks ---
     # TODO: V2 Patch - Inject custom jieba tokenizer preprocess_func here for better Chinese soft-skill lexical matching.
     bm25_retriever = BM25Retriever.from_documents(chunks, k=k)
-
-    # --- Step 2c: Ensemble (hybrid fusion) ---
-    ensemble_retriever = EnsembleRetriever(
-        retrievers=[vector_retriever, bm25_retriever],
-        weights=[0.5, 0.5]
-    )
     print(f"✅ EnsembleRetriever ready (Vector 0.5 + BM25 0.5, k={k})")
 
-    # --- Step 3: Cross-encoder re-ranking ---
+    # --- Step 3: Load cross-encoder for re-ranking ---
     print(f"🔄 Loading re-ranker model: {Config.RERANKER_MODEL}...")
-    cross_encoder = HuggingFaceCrossEncoder(
-        model_name=Config.RERANKER_MODEL,
-        model_kwargs={"trust_remote_code": True}
+    cross_encoder = CrossEncoder(
+        Config.RERANKER_MODEL,
+        trust_remote_code=True,
     )
-    compressor = CrossEncoderReranker(
-        model=cross_encoder,
-        top_n=top_n
-    )
+    print(f"✅ Hybrid Retriever (RRF Ensemble + Cross-Encoder Re-ranking, top_n={top_n}) Ready!")
 
-    compressed_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor,
-        base_retriever=ensemble_retriever
+    return HybridRetriever(
+        vector_retriever=vector_retriever,
+        bm25_retriever=bm25_retriever,
+        cross_encoder_model=cross_encoder,
+        top_n=top_n,
     )
-    print(f"✅ Hybrid Retriever (Ensemble + Re-ranking, top_n={top_n}) Ready!")
-    return compressed_retriever

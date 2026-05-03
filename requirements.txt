@@ -1,6 +1,5 @@
 # LangChain Core & Workflow
 langchain-core
-langchain
 langgraph
 pydantic
 
@@ -14,7 +13,7 @@ pypdf
 langchain-community
 chromadb
 
-# Hybrid Search & Re-ranking
+# Hybrid Search
 rank-bm25
 
 # Utilities
