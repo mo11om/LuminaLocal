@@ -96,7 +96,7 @@ class ResumeGraphBuilder:
     # NEW NODE (Step 1): Query Decomposition
     # ==========================================
     def decompose_node(self, state: BaseAgentState):
-        print("\U0001f9e9 Node: Decomposing job description into optimized sub-queries...")
+        print("🧩 Node: Decomposing job description into optimized sub-queries...")
 
         decompose_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a search query optimizer for resume matching. Given a job description, decompose it into 2-3 focused search sub-queries that will retrieve the most relevant sections from a candidate's resume.
@@ -122,20 +122,20 @@ Example: ["Python Django REST API backend microservices", "team leadership agile
             if json_match:
                 queries = json.loads(json_match.group(0))
                 if isinstance(queries, list) and len(queries) > 0:
-                    print(f"   \u2192 Decomposed into {len(queries)} sub-queries: {queries}")
+                    print(f"   → Decomposed into {len(queries)} sub-queries: {queries}")
                     return {"optimized_queries": queries}
 
             # Fallback
-            print("   \u26a0\ufe0f Failed to parse sub-queries, using original JD as query.")
+            print("⚠️ Failed to parse sub-queries, using original JD as query.")
             return {"optimized_queries": [state["job_description"]]}
 
         except Exception as e:
-            print(f"   \u26a0\ufe0f Decompose failed: {e}. Using original JD as query.")
+            print(f"⚠️ Decompose failed: {e}. Using original JD as query.")
             return {"optimized_queries": [state["job_description"]]}
 
     def retrieve_node(self, state: BaseAgentState):
         # --- CHANGED (Steps 2 & 3): Use optimized queries + hybrid retriever ---
-        print("\ud83d\udd0d Node: Retrieving context via Hybrid Search + Re-ranking...")
+        print("🔍 Node: Retrieving context via Hybrid Search + Re-ranking...")
         queries = state.get("optimized_queries", [state["job_description"]])
 
         all_docs = []
@@ -155,7 +155,7 @@ Example: ["Python Django REST API backend microservices", "team leadership agile
             labeled_chunks.append(f"[Doc {idx}] {doc.page_content}")
 
         context_str = "\n\n".join(labeled_chunks)
-        print(f"   \u2192 Retrieved {len(all_docs)} unique chunks across {len(queries)} sub-queries.")
+        print(f"   → Retrieved {len(all_docs)} unique chunks across {len(queries)} sub-queries.")
         return {"context": context_str}
 
     def analyze_node(self, state: BaseAgentState):
