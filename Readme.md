@@ -9,17 +9,20 @@ Instead of sending personal data to cloud APIs, this system runs locally using *
 ## 🏗 System Architecture
 ![System Architecture Diagram](./image.png)
 
-The application is built on a modular "Agentic" workflow with **multi-provider support**:
+The application is built on a modular "Agentic" workflow with **multi-provider support**, following an advanced **5-Step RAG Cycle**:
 
-* **Orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) (Manages the state between retrieval and analysis nodes).
+1. **Query Decomposition (Step 1)**: The raw job description is broken down into 2-3 optimized sub-queries targeting technical skills, soft skills, and domain experience.
+2. **Hybrid Search (Step 2)**: Retrieves resume chunks using an **Ensemble Retriever** that fuses Semantic Vector Search (Chroma) and Lexical Search (BM25) via Reciprocal Rank Fusion (RRF).
+3. **Re-ranking (Step 3)**: A Cross-Encoder model (`jinaai/jina-reranker-v2-base-multilingual`) re-ranks the hybrid results for optimal context relevance.
+4. **Citation-Grounded Generation (Step 4)**: The LLM performs gap analysis based strictly on retrieved chunks, providing exact citations (e.g., `[Doc 1]`) to prevent hallucinations.
+5. **Self-Correction & Graph Wiring (Step 5)**: `LangGraph` manages the workflow (`decompose → retrieve → analyze → critique → END`).
+
+* **Orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) (Manages the state and graph flow).
 * **LLM Inference:** 
   - [Ollama](https://ollama.com/) (Local models: `gpt-oss`, `llama3`, `mistral`, etc.)
   - [OpenAI API](https://openai.com/) (Cloud-based: `gpt-4o`, `gpt-4-turbo`, etc.)
-  - [vLLM](https://docs.vllm.ai/) (Alternative open-source inference server)
-* **Vector Store:** [ChromaDB](https://www.trychroma.com/) (For local RAG; bypassed when using cloud providers).
-* **Embeddings:** HuggingFace (`all-MiniLM-L6-v2`) via `sentence-transformers`.
+* **Retrieval Stack:** ChromaDB (Vector), BM25 (Lexical), Sentence-Transformers (Cross-Encoder Re-ranking).
 * **Validation:** Pydantic (Enforces strict JSON schema for the AI output).
-* **Self-Correction:** Built-in reflection/critique loop to detect and fix LLM hallucinations.
 
 ---
 
@@ -244,27 +247,30 @@ When you run either script, the pipeline follows these steps:
 
 1. **Initialization:**
    - Reads `LLM_PROVIDER` from `config.json`
-   - For **Ollama/vLLM**: Creates a ChromaDB vector store and ingests the resume PDF
-   - For **OpenAI**: Loads the full resume text directly (RAG bypassed for efficiency)
+   - For local providers: Creates a ChromaDB vector store, extracts raw chunks for BM25, and initializes the `HybridRetriever`.
+   - For **OpenAI**: Loads the full resume text directly (RAG bypassed for efficiency).
 
-2. **Batch Processing:**
-   - Iterates through all jobs in `JOBS_FILE`
-   - For **local providers**: Uses RAG to retrieve relevant resume chunks per job
-   - For **cloud providers**: Uses the full resume text with LLM's context window
+2. **Decomposition (Step 1):**
+   - The LLM parses the job description into optimized sub-queries targeting different skill domains.
 
-3. **Analysis:**
-   - Generates structured JSON output with:
+3. **Hybrid Retrieval & Re-ranking (Steps 2 & 3):**
+   - For **local providers**: Uses the `HybridRetriever` (BM25 + Vector + Cross-Encoder) to find the most relevant resume chunks, formatting them with index labels (`[Doc 1]`).
+   - For **cloud providers**: Uses the full resume text formatted as `[Doc 1]`.
+
+4. **Citation-Grounded Analysis (Step 4):**
+   - Generates structured JSON output grounded in the retrieved context:
      - `match_classification`: "Strong Match", "Good Match", or "No Match"
      - `missing_critical_skills`: Required skills not found in resume
      - `missing_soft_skills`: Soft skills gaps
      - `brief_analysis`: Concise 2-sentence summary
+     - `citations`: List of specific `[Doc N]` chunks supporting the claims
 
-4. **Quality Assurance** (Agent mode only):
-   - Critique node audits the analysis for hallucinations
-   - If hallucinations detected, reroutes to revision (up to 3 times)
-   - Tracks token usage for cost analysis
+5. **Quality Assurance (Agent mode only):**
+   - Critique node audits the analysis for hallucinations.
+   - If hallucinations are detected, reroutes to revision (up to 3 times).
+   - Tracks token usage for cost analysis.
 
-5. **Export:**
+6. **Export:**
    - Saves results to `data/output/analysis_results.csv`
    - For OpenAI: Also generates `token_usage_report.csv`
 
