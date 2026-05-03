@@ -51,13 +51,15 @@ llm = LLMFactory.get_llm(
 
 ### Self-Correction Loop (Agent Mode)
 
-The agent workflow includes an intelligent critique system:
+The agent workflow (`agent.py`) includes an intelligent critique system:
 
-1. **Generate**: LLM creates initial analysis JSON
-2. **Audit**: Separate LLM reviews the analysis against resume context
-3. **Detect**: Identifies hallucinations (claimed skills that don't exist in resume)
-4. **Revise**: Reroutes to generation with critique feedback (up to 3 times)
-5. **Export**: Final validated result
+1. **Decompose**: LLM breaks job description into optimized sub-queries
+2. **Retrieve**: Hybrid search (BM25 + Vector + Re-ranking) fetches the best resume chunks
+3. **Generate**: LLM creates citation-grounded analysis JSON
+4. **Audit**: Separate LLM reviews the analysis against labeled `[Doc N]` context
+5. **Detect**: Identifies hallucinations (claimed skills that don't exist in cited chunks)
+6. **Revise**: Reroutes to generation with critique feedback (up to 3 times)
+7. **Export**: Final validated result
 
 This ensures higher accuracy, especially with complex job requirements.
 
@@ -86,11 +88,11 @@ Example workflow cost calculation:
 ├── src/
 │   └── cv_matcher/           # Main Python package
 │       ├── __init__.py
-│       ├── utils.py          # Config class, ResumeIngestor, shared types
-│       ├── main.py           # Primary batch analysis script (use this to run)
-│       ├── agent.py          # Advanced agentic workflow with reflection loop
-│       ├── update_cv.py      # Single-job gap analysis utility
-│       └── cv_ai.py          # Standalone prototype / legacy script
+│       ├── utils.py          # Config, ResumeIngestor, HybridRetriever, shared types
+│       ├── main.py           # Primary batch analysis (5-Step RAG pipeline)
+│       ├── agent.py          # Agentic workflow with self-correction loop
+│       ├── gpt_baseline.py   # GPT-4o baseline comparison module
+│       └── update_cv.py      # Single-job gap analysis utility
 │
 └── data/
     ├── raw/                  # Your resume PDF(s)
@@ -170,7 +172,7 @@ All settings are centralized in `config.json` at the project root.
 | --- | --- | --- |
 | `LLM_PROVIDER` | `ollama` | LLM provider: `"ollama"`, `"openai"`, or `"vllm"` |
 | `LLM_MODEL` | `gpt-oss:20b` | Model name for Ollama (e.g., `llama3`, `mistral`, `neural-chat`) |
-| `GPT_MODEL` | `gpt-4o` | Model name for OpenAI (e.g., `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`) |
+| `GPT_MODEL` | `gpt-4o` | Model name for OpenAI (e.g., `gpt-4o`, `gpt-4-turbo`) |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | HuggingFace model for vectorizing text. |
 | `RESUME_FILE` | `./data/raw/CV.md.pdf` | Path to the candidate's PDF resume. |
 | `JOBS_FILE` | `./data/jobs/processed_jobs_schema.json` | Path to the JSON file containing job listings. |
@@ -178,7 +180,9 @@ All settings are centralized in `config.json` at the project root.
 | `OUTPUT_DIR` | `./data/output` | Directory where CSV reports are saved. |
 | `CHUNK_SIZE` | `500` | Character limit for splitting the resume (local RAG only). |
 | `CHUNK_OVERLAP` | `50` | Character overlap between chunks (local RAG only). |
-| `RETRIEVER_K` | `8` | Number of resume chunks to retrieve per query (local RAG only). |
+| `RETRIEVER_K` | `8` | Number of resume chunks each base retriever returns per sub-query. |
+| `RERANKER_MODEL` | `jinaai/jina-reranker-v2-base-multilingual` | Cross-encoder model for re-ranking retrieved chunks. |
+| `RERANK_TOP_N` | `8` | Number of top chunks kept after cross-encoder re-ranking. |
 
 ---
 
@@ -213,20 +217,21 @@ See `example.json` for the expected format:
 
 ### Primary Scripts
 
-**Option 1: Basic Analysis** (Recommended for local inference)
+**Option 1: Batch Analysis** (Recommended for local inference)
 ```bash
 python -m cv_matcher.main
 ```
+- Full 5-Step RAG: Decompose → Hybrid Retrieve → Re-rank → Cite → Analyze
 - Uses `LLM_PROVIDER` and `LLM_MODEL` from `config.json`
-- For local Ollama: Enables RAG (Vector Search) for efficient retrieval
+- For local Ollama: Enables Hybrid Search (BM25 + Vector + Cross-Encoder Re-ranking)
 - For cloud providers: Disables RAG and loads the full resume text
 
-**Option 2: Advanced Agentic Workflow** (With self-correction)
+**Option 2: Agentic Workflow** (With self-correction)
 ```bash
 python -m cv_matcher.agent
 ```
-- Includes a built-in **reflection/critique loop**
-- Automatically detects and fixes LLM hallucinations
+- Same 5-Step RAG pipeline **plus** a built-in **reflection/critique loop**
+- Automatically detects and fixes LLM hallucinations via citation auditing
 - Up to 3 revision attempts per job if hallucinations are found
 - Tracks token usage for cloud providers (OpenAI)
 - Exports a separate `token_usage_report.csv` for cost tracking
@@ -237,9 +242,9 @@ The pipeline automatically adapts based on your `config.json` settings:
 
 | Provider | Behavior | Best For |
 | --- | --- | --- |
-| **Ollama** (local) | Enables RAG + Vector Search | Privacy-first, cost-free inference |
-| **OpenAI** (cloud) | Disables RAG, uses full resume | Fast, high-quality analysis |
-| **vLLM** (local/cloud) | Enables RAG + Vector Search | Self-hosted open-source models |
+| **Ollama** (local) | Enables Hybrid RAG (BM25 + Vector + Re-ranking) | Privacy-first, cost-free inference |
+| **OpenAI** (cloud) | Bypasses RAG, uses full resume text | Fast, high-quality analysis |
+| **vLLM** (local/cloud) | Enables Hybrid RAG (BM25 + Vector + Re-ranking) | Self-hosted open-source models |
 
 ### Execution Flow
 
@@ -291,9 +296,10 @@ The results are saved to `data/output/analysis_results.csv`. The AI classifies f
 **Main Results** (`analysis_results.csv`):
 * **Job Title**: Position name
 * **Classification**: Strong Match / Good Match / No Match
-* **Missing Critical Skills**: Mandatory technical skills gaps
-* **Missing Soft Skills**: Soft skills gaps (leadership, communication, etc.)
-* **Brief Analysis:** 2-sentence summary of the decision
+* **Matching Skills**: Skills found in both JD and resume
+* **Matched/Missing Critical Skills**: Technical skill match/gap breakdown
+* **Matched/Missing Bonus Skills**: Nice-to-have skill match/gap breakdown
+* **Citations**: `[Doc N]` references grounding the analysis
 * **Total Tokens Used:** Token count (cloud providers only)
 
 **Token Report** (`token_usage_report.csv`, OpenAI only):
@@ -317,9 +323,11 @@ The results are saved to `data/output/analysis_results.csv`. The AI classifies f
 ### Debugging Tips
 
 - **Enable verbose logging**: Check console output during execution; the pipeline prints each step:
-  - `🔄 Initializing Embedding Model` → Vector store loading
-  - `🤖 Node: Generating Analysis` → LLM inference
-  - `🧐 Node: Auditing Output` → Quality checks
+  - `🔄 Initializing Embedding Model` → Vector store + BM25 loading
+  - `🧩 Node: Decomposing job description` → Query decomposition
+  - `🔍 Node: Retrieving context` → Hybrid search + re-ranking
+  - `🤖 Node: Generating Analysis` → LLM inference with citations
+  - `🧐 Node: Auditing Output` → Hallucination checks (agent mode)
   
 - **Test with a single job**: Create a minimal `test_job.json` with one entry to debug issues faster.
 
