@@ -5,6 +5,7 @@ pydantic
 
 # LLM & Embeddings
 langchain-ollama
+langchain-openai
 langchain-huggingface
 sentence-transformers
 
@@ -12,8 +13,12 @@ sentence-transformers
 pypdf
 langchain-community
 chromadb
+rank-bm25
 
 # Utilities
 typing-extensions
 openai
 python-dotenv
+
+# Testing
+pytest

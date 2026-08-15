@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 from typing import TypedDict, Optional, Dict, Any
 from dotenv import load_dotenv
 
@@ -43,6 +44,9 @@ class Config:
     
     # Hyperparameters
     RETRIEVER_K = _data.get("RETRIEVER_K", 8)
+    # Chroma relevance scores are not portable across embedding models; tune per deployment.
+    RETRIEVER_MIN_SCORE = _data.get("RETRIEVER_MIN_SCORE", 0.2)
+    MAX_WORKERS = _data.get("MAX_WORKERS", 4)
     ANALYSIS_OUTPUT_CSV = _data.get("ANALYSIS_OUTPUT_CSV", "analysis_results.csv")
     
     # GPT Baseline Configuration
@@ -66,15 +70,21 @@ class BaseAgentState(TypedDict):
 # ==========================================
 # 3. Resume Ingestion Logic
 # ==========================================
+def chunk_id(text: str) -> str:
+    """Content-addressed id so re-ingesting the same resume upserts instead of duplicating."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class ResumeIngestor:
     def __init__(self):
         print(f"🔄 Initializing Embedding Model: {Config.EMBEDDING_MODEL}...")
-        
+
         self.embeddings = HuggingFaceEmbeddings(
             model_name=Config.EMBEDDING_MODEL,
             # model_kwargs={'device': 'hip'} # Uncomment if you have a GPU
                                                 )
         self.vector_store = None
+        self.texts = []
 
     def get_vector_store(self, pdf_path: str, force_reload: bool = False):
         """
@@ -92,7 +102,8 @@ class ResumeIngestor:
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=Config.CHUNK_SIZE,
-            chunk_overlap=Config.CHUNK_OVERLAP
+            chunk_overlap=Config.CHUNK_OVERLAP,
+            separators=["\n\n", "\n", ". ", ", ", " ", ""]
         )
         texts = text_splitter.split_documents(documents)
         print(f"🧩 Split resume into {len(texts)} chunks.")
@@ -101,8 +112,12 @@ class ResumeIngestor:
         self.vector_store = Chroma.from_documents(
             documents=texts,
             embedding=self.embeddings,
-            persist_directory=Config.VECTOR_DB_PATH
+            persist_directory=Config.VECTOR_DB_PATH,
+            ids=[chunk_id(t.page_content) for t in texts],
+            # Pins the relevance_score_fn so similarity thresholds are comparable.
+            collection_metadata={"hnsw:space": "cosine"}
         )
+        self.texts = texts
         print("✅ Vector Store Ready!")
         return self.vector_store
     
