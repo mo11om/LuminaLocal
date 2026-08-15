@@ -10,14 +10,21 @@ dependencies = [
     "langchain-core",
     "langchain-community",
     "langchain-ollama",
+    "langchain-openai",
     "langchain-huggingface",
     "langgraph",
     "chromadb",
+    "rank-bm25",
     "pypdf",
     "sentence-transformers",
     "pydantic",
     "typing-extensions",
+    "openai",
+    "python-dotenv",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
