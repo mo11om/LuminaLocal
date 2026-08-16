@@ -2,12 +2,13 @@
 
 ## 📖 Overview
 
-This project is a privacy-focused, local **Batch RAG (Retrieval-Augmented Generation)** pipeline designed to automate technical resume screening.
+This project is a local-first **Batch RAG (Retrieval-Augmented Generation)** pipeline designed to automate technical resume screening.
 
-Instead of sending personal data to cloud APIs, this system runs locally using **Ollama** and **ChromaDB**. It indexes a PDF resume, performs semantic searches against a database of job descriptions, and provides a structured "Gap Analysis" detailing exactly why a candidate matches (or doesn't match) a role.
+It indexes a PDF resume, performs hybrid semantic + keyword search against a database of job descriptions, and provides a structured "Gap Analysis" detailing exactly why a candidate matches (or doesn't match) a role.
+
+> **On privacy:** the default `ollama` provider keeps everything on your machine — no resume text leaves the host. Setting `LLM_PROVIDER` to `"openai"` **sends the full resume text to OpenAI** (retrieval is bypassed on that path entirely). Choose the provider accordingly. Either way, the local ChromaDB store under `VECTOR_DB_PATH` retains resume content on disk until you delete it.
 
 ## 🏗 System Architecture
-![System Architecture Diagram](./image.png)
 
 The application is built on a modular "Agentic" workflow with **multi-provider support**:
 
@@ -16,10 +17,12 @@ The application is built on a modular "Agentic" workflow with **multi-provider s
   - [Ollama](https://ollama.com/) (Local models: `gpt-oss`, `llama3`, `mistral`, etc.)
   - [OpenAI API](https://openai.com/) (Cloud-based: `gpt-4o`, `gpt-4-turbo`, etc.)
   - [vLLM](https://docs.vllm.ai/) (Alternative open-source inference server)
-* **Vector Store:** [ChromaDB](https://www.trychroma.com/) (For local RAG; bypassed when using cloud providers).
-* **Embeddings:** HuggingFace (`all-MiniLM-L6-v2`) via `sentence-transformers`.
+* **Vector Store:** [ChromaDB](https://www.trychroma.com/) (Dense retrieval for local RAG; bypassed when using cloud providers).
+* **Keyword Search:** `BM25Retriever` (Sparse retrieval over the same chunks, so exact tokens like `AWS` or `K8s` aren't missed by embeddings).
+* **Embeddings:** HuggingFace via `sentence-transformers` (`all-MiniLM-L6-v2` by default; set `EMBEDDING_MODEL` to override).
 * **Validation:** Pydantic (Enforces strict JSON schema for the AI output).
-* **Self-Correction:** Built-in reflection/critique loop to detect and fix LLM hallucinations.
+* **Self-Correction:** Built-in reflection/critique loop that re-runs *retrieval* on a failed audit, not just generation.
+* **Resilience:** Per-job checkpointing, concurrent workers, and backoff retry on transient provider errors.
 
 ---
 
@@ -137,7 +140,7 @@ Example workflow cost calculation:
 ├── example.json              # Example job JSON for testing
 ├── requirements.txt          # Python dependencies
 ├── environment.yml           # Conda environment spec
-├── image.png                 # Architecture diagram
+├── image.png                 # Legacy sequence diagram (pre-hardening, kept for reference)
 │
 ├── src/
 │   └── cv_matcher/           # Main Python package
@@ -388,6 +391,19 @@ Separately, `[UNRESOLVED — ...]` is appended to the **retrieved context** (not
 * **Prompt Tokens**: Tokens consumed by input
 * **Completion Tokens**: Tokens generated in output
 * **Total Tokens**: Sum for cost calculation
+
+---
+
+## ⚠️ Known Limitations
+
+Understood and deliberately out of scope for now — worth knowing before relying on the output:
+
+* **Job descriptions are trusted input.** `requirements` text is interpolated into the prompt without sanitization. If you feed in scraped or third-party postings, a crafted posting could influence its own classification. Only run job data you trust.
+* **The critique can only audit what retrieval fetched.** Re-running retrieval on a failed audit (with the critique as a hint) mitigates this, but a skill that never surfaces above the relevance threshold across all attempts stays invisible to the auditor.
+* **`RETRIEVER_MIN_SCORE` is not portable.** Relevance scores vary by embedding model and Chroma version. The `0.2` default is a starting point, not a tuned value — calibrate it against your own resume and model before trusting `UNRESOLVED` markers.
+* **Classification percentages are model-reported.** `verify_classification` enforces that the label agrees with the model's own matched/missing lists, but those lists are still the model's judgment, not ground truth.
+* **Test coverage is unit-level only.** The suite covers pure logic; retrieval quality, prompt behavior, and the end-to-end graph are verified manually.
+* **Resume PII persists on disk.** The ChromaDB store keeps resume content indefinitely with no TTL or purge command. Delete `VECTOR_DB_PATH` manually when you're done.
 
 ---
 
