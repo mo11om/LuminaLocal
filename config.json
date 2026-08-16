@@ -1,11 +1,11 @@
 {
     "LLM_PROVIDER": "ollama",
-    "LLM_MODEL": "gpt-oss:20b",
+    "LLM_MODEL": "qwen3.6:27b",
     "EMBEDDING_MODEL": "BAAI/bge-m3",
     "VECTOR_DB_PATH": "./data/chroma_db",
     "CHUNK_SIZE": 300,
     "CHUNK_OVERLAP": 30,
-    "JOBS_FILE": "./data/jobs/test.json",
+    "JOBS_FILE": "./data/jobs/eval.json",
     "RESUME_FILE": "./data/raw/CV.md.pdf",
     "OUTPUT_DIR": "./data/output",
     "RETRIEVER_K": 16,
