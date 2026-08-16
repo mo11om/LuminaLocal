@@ -10,6 +10,8 @@ It indexes a PDF resume, performs hybrid semantic + keyword search against a dat
 
 ## 🏗 System Architecture
 
+![System Architecture Diagram](./architecture.svg)
+
 The application is built on a modular "Agentic" workflow with **multi-provider support**:
 
 * **Orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) (Manages the state between retrieval and analysis nodes).
@@ -140,7 +142,8 @@ Example workflow cost calculation:
 ├── example.json              # Example job JSON for testing
 ├── requirements.txt          # Python dependencies
 ├── environment.yml           # Conda environment spec
-├── image.png                 # Legacy sequence diagram (pre-hardening, kept for reference)
+├── architecture.svg          # Sequence diagram of the current pipeline
+├── image.png                 # Superseded by architecture.svg (pre-hardening, kept for reference)
 │
 ├── src/
 │   └── cv_matcher/           # Main Python package
